@@ -1,0 +1,8 @@
+data/rides.db
+data/gpx/
+.venv/
+__pycache__/
+*.pyc
+.liberty_rider_token
+.liberty_rider_refresh_token
+.liberty_rider_firebase_api_key
