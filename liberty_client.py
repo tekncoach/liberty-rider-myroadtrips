@@ -41,6 +41,18 @@ query MyRides($first: Int, $after: DateTime, $before: DateTime, $onlyFavorites: 
 }
 """.strip()
 
+# Only fields confirmed to exist via introspection so far — the User type
+# likely has more (name, email, vehicles, ...), worth expanding once someone
+# checks with `{ __type(name: "User") { fields { name } } }`.
+CURRENT_USER_QUERY = """
+query CurrentUser {
+  currentUser {
+    id
+    manualRideCount
+  }
+}
+""".strip()
+
 
 class LibertyRiderClient:
     def __init__(self, token: str):
@@ -85,6 +97,15 @@ class LibertyRiderClient:
             # Partial failure (e.g. a transient 502 re-deriving one field on one
             # ride) — the rest of the page is still usable, so just warn.
             print(f"[liberty_client] partial GraphQL errors: {data['errors']}")
+        return data["data"]["currentUser"]
+
+    def get_current_user(self) -> dict:
+        payload = {"operationName": "CurrentUser", "query": CURRENT_USER_QUERY}
+        resp = self.session.post(API_URL, json=payload, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("data") is None:
+            raise RuntimeError(f"GraphQL error: {data.get('errors')}")
         return data["data"]["currentUser"]
 
     def download_gpx(self, gpx_export_url: str) -> bytes:

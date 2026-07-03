@@ -41,7 +41,13 @@
     width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--bg); color: var(--text); font-size: 12px; margin-bottom: 6px;
   }
-  #syncbar .row { display: flex; gap: 6px; }
+  #syncbar .row { display: flex; gap: 6px; margin-bottom: 6px; }
+  #authStatus { font-size: 11.5px; color: var(--muted); margin-bottom: 2px; }
+  #authStatus.connected { color: #2ba85a; }
+  #profileInfo { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  #profileInfo:empty { display: none; }
+  #tokenDetails { margin-bottom: 6px; }
+  #tokenDetails summary { font-size: 11px; color: var(--muted); cursor: pointer; margin-bottom: 6px; }
   button {
     font-family: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--bg);
     color: var(--text); border-radius: 6px; padding: 6px 10px; cursor: pointer;
@@ -180,14 +186,6 @@
   <div id="sidebar">
     <h1>🏍️ Mes trajets</h1>
     <p class="sub">Trajets GPS personnels Liberty Rider, à regrouper en roadtrips.</p>
-    <div id="syncbar">
-      <input id="token" type="password" placeholder="Token Bearer Liberty Rider…" />
-      <div class="row">
-        <button id="syncBtn" class="primary">Synchroniser</button>
-        <button id="syncFullBtn" title="Re-télécharge tout l'historique">Full sync</button>
-      </div>
-      <div id="syncstatus"></div>
-    </div>
     <div id="tabs">
       <button id="tabTrips" class="active">Roadtrips</button>
       <button id="tabTags">Tags</button>
@@ -208,6 +206,23 @@
       <div class="row">
         <button id="mergeSelectionBtn" disabled title="Fusionne 2+ trajets sélectionnés en un seul (même trace coupée en deux)">🔗 Fusionner la sélection</button>
       </div>
+    </div>
+    <div id="syncbar">
+      <div id="authStatus"></div>
+      <div id="profileInfo"></div>
+      <div class="row" id="loginRow">
+        <button id="loginBtn">🔑 Se connecter</button>
+        <button id="logoutBtn" style="display:none" title="Oublie le token enregistré">Déconnexion</button>
+      </div>
+      <details id="tokenDetails">
+        <summary>Ou coller un token manuellement</summary>
+        <input id="token" type="password" placeholder="Token Bearer Liberty Rider…" />
+      </details>
+      <div class="row">
+        <button id="syncBtn" class="primary">Synchroniser</button>
+        <button id="syncFullBtn" title="Re-télécharge tout l'historique">Full sync</button>
+      </div>
+      <div id="syncstatus"></div>
     </div>
   </div>
   <div id="main">

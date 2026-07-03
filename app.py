@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import pathlib
+import subprocess
+import sys
 
 import gpxpy
 import gpxpy.gpx
 import polyline as polyline_lib
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +20,9 @@ from utils import day_key, haversine_km
 
 ROOT = pathlib.Path(__file__).parent
 STATIC = ROOT / "static"
+TOKEN_FILE = ROOT / ".liberty_rider_token"
+REFRESH_TOKEN_FILE = ROOT / ".liberty_rider_refresh_token"
+API_KEY_FILE = ROOT / ".liberty_rider_firebase_api_key"
 
 app = FastAPI(title="Mes trajets — Liberty Rider")
 db.init_db()
@@ -272,7 +278,7 @@ def _is_merge_candidate(earlier: dict, later: dict) -> bool:
 
 
 class SyncRequest(BaseModel):
-    token: str
+    token: str | None = None
     full: bool = False
 
 
@@ -303,11 +309,81 @@ class MergeRidesRequest(BaseModel):
 
 @app.post("/api/sync")
 def api_sync(req: SyncRequest):
+    token = req.token or _read_saved_token()
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="No token available — paste one, or log in first (see the login button / `make login`).",
+        )
     try:
-        summary = sync_module.sync(req.token, full=req.full)
+        summary = sync_module.sync(token, full=req.full)
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status in (401, 403):
+            raise HTTPException(
+                status_code=401,
+                detail="Token expired or invalid — log in again (button, or `make login`).",
+            )
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return summary
+
+
+def _read_saved_token() -> str | None:
+    if TOKEN_FILE.exists():
+        return TOKEN_FILE.read_text().strip() or None
+    return None
+
+
+@app.get("/api/auth/status")
+def api_auth_status():
+    return {"has_saved_token": _read_saved_token() is not None}
+
+
+@app.post("/api/auth/login")
+def api_auth_login():
+    """Runs login_playwright.py: opens a real local browser, the user logs
+    into liberty-rider.com normally, and the script captures the resulting
+    tokens to disk (see that script's docstring). Blocks until it's done —
+    this is a local personal tool, so a long-running request here is fine."""
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "login_playwright.py")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=330,
+    )
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=502,
+            detail=(result.stderr or result.stdout or "login_playwright.py failed").strip().splitlines()[-1],
+        )
+    return {"ok": True, "has_saved_token": _read_saved_token() is not None}
+
+
+@app.get("/api/auth/profile")
+def api_auth_profile():
+    token = _read_saved_token()
+    if not token:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    from liberty_client import LibertyRiderClient
+
+    try:
+        user = LibertyRiderClient(token).get_current_user()
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status in (401, 403):
+            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.")
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+    return {"id": user.get("id"), "manual_ride_count": user.get("manualRideCount")}
+
+
+@app.post("/api/auth/logout")
+def api_auth_logout():
+    for f in (TOKEN_FILE, REFRESH_TOKEN_FILE, API_KEY_FILE):
+        f.unlink(missing_ok=True)
+    return {"ok": True}
 
 
 @app.get("/api/rides")
