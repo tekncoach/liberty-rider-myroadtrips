@@ -59,17 +59,60 @@ function escapeHtml(s) {
   return (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// --- auth ---
+async function refreshAuthStatus() {
+  const { has_saved_token } = await api("/api/auth/status");
+  const el = document.getElementById("authStatus");
+  el.classList.toggle("connected", has_saved_token);
+  el.textContent = has_saved_token ? "✓ Connecté" : "Pas encore connecté.";
+  document.getElementById("loginBtn").style.display = has_saved_token ? "none" : "";
+  document.getElementById("logoutBtn").style.display = has_saved_token ? "" : "none";
+
+  const profileEl = document.getElementById("profileInfo");
+  if (has_saved_token) {
+    try {
+      const profile = await api("/api/auth/profile");
+      profileEl.textContent = `${profile.manual_ride_count ?? "?"} trajets enregistrés côté Liberty Rider`;
+    } catch (e) {
+      profileEl.textContent = "";
+    }
+  } else {
+    profileEl.textContent = "";
+  }
+  return has_saved_token;
+}
+
+document.getElementById("loginBtn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("syncstatus");
+  const btn = document.getElementById("loginBtn");
+  btn.disabled = true;
+  statusEl.textContent = "Une fenêtre de navigateur va s'ouvrir — connecte-toi sur Liberty Rider…";
+  try {
+    await api("/api/auth/login", { method: "POST" });
+    await refreshAuthStatus();
+    statusEl.textContent = "Connecté ! Synchronisation…";
+    await doSync(false);
+  } catch (e) {
+    statusEl.textContent = "Échec de la connexion : " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("logoutBtn").addEventListener("click", async () => {
+  if (!confirm("Oublier le token enregistré ? Il faudra se reconnecter pour synchroniser.")) return;
+  await api("/api/auth/logout", { method: "POST" });
+  document.getElementById("syncstatus").textContent = "Déconnecté.";
+  await refreshAuthStatus();
+});
+
 // --- sync ---
 document.getElementById("syncBtn").addEventListener("click", () => doSync(false));
 document.getElementById("syncFullBtn").addEventListener("click", () => doSync(true));
 
 async function doSync(full) {
-  const token = document.getElementById("token").value.trim();
+  const token = document.getElementById("token").value.trim() || null;
   const statusEl = document.getElementById("syncstatus");
-  if (!token) {
-    statusEl.textContent = "Colle un token Bearer d'abord.";
-    return;
-  }
   statusEl.textContent = full ? "Synchronisation complète en cours…" : "Synchronisation en cours…";
   document.getElementById("syncBtn").disabled = true;
   document.getElementById("syncFullBtn").disabled = true;
@@ -693,3 +736,4 @@ function focusDay(index) {
 
 switchTab(state.tab);
 refresh();
+refreshAuthStatus();
