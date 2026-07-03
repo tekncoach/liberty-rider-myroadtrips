@@ -45,8 +45,35 @@ make install
 
 ### 1. Get a Bearer token
 
-The Liberty Rider API isn't public, so there's no API key to request —
-instead, grab the same token your browser uses:
+The Liberty Rider API isn't public, so there's no API key to request. Three
+ways to get a token, from most to least convenient:
+
+**Recommended — `make login`**: opens a real browser window on
+liberty-rider.com. Log in exactly as you normally would — your password
+goes straight to Liberty Rider's own login page and this script never sees
+it. It watches network traffic for the resulting token and captures it
+automatically, along with the underlying Firebase refresh token, so future
+tokens can be renewed with `make refresh-token` without opening a browser
+again.
+
+```bash
+make login-setup   # one-time: installs Playwright + a Chromium build
+make login
+```
+
+**Alternative — `make login-password`**: skips the browser and exchanges
+your email/password directly with Firebase's login endpoint. Only use this
+if you have a specific reason to avoid a browser (e.g. a headless server) —
+read the security note at the top of `login_password.py` first, since it
+means typing your real password into a third-party script rather than
+Liberty Rider's own login page.
+
+```bash
+make login-password EMAIL=you@example.com
+```
+
+**Manual fallback**: copy the token straight out of your browser's
+DevTools, no scripts involved:
 
 1. Log into [liberty-rider.com](https://liberty-rider.com/) in a browser.
 2. Open DevTools → Network tab.
@@ -54,11 +81,9 @@ instead, grab the same token your browser uses:
 4. Copy the `authorization` request header value, then strip the leading
    `Bearer ` prefix — you just need the raw JWT (`eyJ...`).
 
-The token is a short-lived Firebase ID token (~1 hour). You'll need a fresh
-one each time it expires — either repeat the steps above, or set up the
-optional saved-refresh-token flow (see `firebase_refresh.py` and
-`refresh_token_cli.py`) to mint new tokens with `make refresh-token` without
-going back to a browser.
+Either way, the token is a short-lived Firebase ID token (~1 hour) — once
+you have the refresh token too (via either `make login*` option above),
+`make refresh-token` mints new ones indefinitely without any further login.
 
 ### 2. Sync your rides
 
@@ -87,9 +112,11 @@ Then open **http://127.0.0.1:8420**.
   gitignored.
 - **Frontend**: a single-page vanilla-JS app (`static/index.html`,
   `static/app.js`) using Leaflet for mapping, with no build step.
-- **Auth**: no login flow is implemented for Liberty Rider itself — you
-  supply your own Firebase Bearer token, either pasted by hand or refreshed
-  via the optional saved-refresh-token helper scripts.
+- **Auth**: `login_playwright.py` / `login_password.py` / manual DevTools
+  copy all end up writing the same three files at the repo root —
+  `.liberty_rider_token`, `.liberty_rider_refresh_token`,
+  `.liberty_rider_firebase_api_key` — all gitignored, never committed, and
+  read by nothing except this app running on your own machine.
 
 ## Disclaimer
 
