@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+from datetime import timedelta
 
 import gpxpy
 import gpxpy.gpx
@@ -25,7 +26,7 @@ import db
 import sync as sync_module
 from firebase_refresh import refresh_id_token, sign_in_with_password
 from liberty_client import LibertyRiderClient
-from utils import day_key, haversine_km
+from utils import day_key, haversine_km, parse_iso
 
 ROOT = pathlib.Path(__file__).parent
 STATIC = ROOT / "static"
@@ -119,6 +120,21 @@ def _raw_pauses(conn, ride_id: str) -> list[dict]:
     ]
 
 
+def _raw_resumes(conn, ride_id: str) -> list[dict]:
+    resume_rows = conn.execute(
+        "SELECT * FROM resumes WHERE ride_id = ? ORDER BY estimated_time", (ride_id,)
+    ).fetchall()
+    return [
+        {
+            "estimated_time": r["estimated_time"],
+            "automatic": bool(r["automatic"]),
+            "lat": r["lat"],
+            "lon": r["lon"],
+        }
+        for r in resume_rows
+    ]
+
+
 def _merge_members(conn, ride_id: str):
     """Raw rows absorbed into `ride_id` via a merge (empty if none)."""
     return conn.execute(
@@ -178,6 +194,77 @@ def _merged_polyline_and_pauses(conn, row) -> tuple[list, list]:
     for r in group:
         pauses.extend(_raw_pauses(conn, r["id"]))
     return points, pauses
+
+
+def _ride_own_timeline(start_time: str, duration: float, pauses: list[dict], resumes: list[dict]) -> list[dict]:
+    """Ride/pause segments for a single raw ride's own pause+resume events.
+    State always starts "ride" at the ride's own start_time — this matches
+    how Liberty Rider computes that ride's own duration_without_pauses /
+    total_pauses_duration (verified numerically against real data), so a
+    trailing unresolved pause (no matching resume before this ride ends)
+    gets capped at this ride's own end rather than left open."""
+    start = parse_iso(start_time)
+    end = start + timedelta(seconds=duration or 0)
+    events = sorted(
+        [(parse_iso(p["estimated_time"]), "pause") for p in pauses]
+        + [(parse_iso(r["estimated_time"]), "resume") for r in resumes],
+        key=lambda e: e[0],
+    )
+    segments = []
+    state = "ride"
+    seg_start = start
+    for t, etype in events:
+        if t <= seg_start:
+            continue
+        if etype == "pause" and state == "ride":
+            segments.append({"type": "ride", "start": seg_start, "end": t})
+            state, seg_start = "pause", t
+        elif etype == "resume" and state == "pause":
+            segments.append({"type": "pause", "start": seg_start, "end": t})
+            state, seg_start = "ride", t
+        # pause-while-paused / resume-while-riding: no counterpart in our
+        # state, ignore rather than fabricate or misattribute a segment.
+    if end > seg_start:
+        segments.append({"type": state, "start": seg_start, "end": end})
+    return segments
+
+
+def _merged_ride_timeline(conn, row) -> list[dict]:
+    """Concatenates each merge-group member's own independently-built
+    timeline (see _ride_own_timeline) across merge boundaries. Any
+    inter-member tracking gap is counted as "pause" — consistent with how
+    the merged ride's own total_pauses_duration is computed (merged
+    duration minus each member's own riding time, so the untracked gap
+    already counts as pause time there too).
+
+    Building each member's timeline independently (rather than merge-sorting
+    every pause/resume across the whole group at once) matters: on real
+    data, a member ride's dangling unresolved pause otherwise gets "closed"
+    by an unrelated resume belonging to the *next* member's own later pause,
+    ballooning one segment to cover everything in between."""
+    def _append(segments, seg):
+        if segments and segments[-1]["type"] == seg["type"] and segments[-1]["end"] == seg["start"]:
+            segments[-1]["end"] = seg["end"]
+        else:
+            segments.append(seg)
+
+    group = _merge_group(conn, row)
+    segments: list[dict] = []
+    prev_end = None
+    for r in group:
+        member_start = parse_iso(r["start_time"])
+        if prev_end is not None and member_start > prev_end:
+            _append(segments, {"type": "pause", "start": prev_end, "end": member_start})
+        member_segments = _ride_own_timeline(
+            r["start_time"], r["duration"] or 0, _raw_pauses(conn, r["id"]), _raw_resumes(conn, r["id"])
+        )
+        for seg in member_segments:
+            _append(segments, seg)
+        prev_end = member_start + timedelta(seconds=r["duration"] or 0)
+    return [
+        {"type": s["type"], "start": s["start"].isoformat(), "end": s["end"].isoformat()}
+        for s in segments
+    ]
 
 
 def _polylines_and_pauses(conn, ride_rows) -> tuple[dict, dict]:
@@ -516,6 +603,7 @@ def api_ride_detail(ride_id: str, user=Depends(get_session_user)):
         row = _get_owned_ride(conn, ride_id, user["id"])
         ride = _merged_ride_dict(conn, row)
         ride["polyline"], ride["pauses"] = _merged_polyline_and_pauses(conn, row)
+        ride["timeline"] = _merged_ride_timeline(conn, row)
         ride["tags"] = _ride_tags(conn, ride_id)
         return ride
     finally:

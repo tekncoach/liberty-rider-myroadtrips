@@ -72,6 +72,13 @@ CREATE TABLE IF NOT EXISTS pauses (
   lat REAL, lon REAL
 );
 
+CREATE TABLE IF NOT EXISTS resumes (
+  ride_id TEXT REFERENCES rides(id),
+  estimated_time TEXT,
+  automatic INTEGER,
+  lat REAL, lon REAL
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   user_id TEXT REFERENCES users(id),
   key TEXT NOT NULL,
@@ -88,6 +95,7 @@ CREATE TABLE IF NOT EXISTS ride_tags (
 CREATE INDEX IF NOT EXISTS idx_rides_start_time ON rides(start_time);
 CREATE INDEX IF NOT EXISTS idx_rides_roadtrip ON rides(roadtrip_id);
 CREATE INDEX IF NOT EXISTS idx_pauses_ride ON pauses(ride_id);
+CREATE INDEX IF NOT EXISTS idx_resumes_ride ON resumes(ride_id);
 CREATE INDEX IF NOT EXISTS idx_ride_tags_tag ON ride_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
@@ -138,6 +146,8 @@ def init_db() -> None:
 
         conn.executescript(POST_MIGRATION_INDEXES)
         conn.commit()
+
+        _backfill_resumes_from_raw_json(conn)
     finally:
         conn.close()
 
@@ -265,6 +275,32 @@ def _migrate_sync_state_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _backfill_resumes_from_raw_json(conn: sqlite3.Connection) -> None:
+    """One-time migration: the `resumes` table is new, but every ride ever
+    synced already carries its raw GraphQL response (including `resumes`,
+    which the query has always requested but the app never stored) in
+    `raw_json` — so this backfills from data already on disk, no resync
+    needed. Guarded on an empty `resumes` table so it only runs once."""
+    if conn.execute("SELECT 1 FROM resumes LIMIT 1").fetchone():
+        return
+    rows = conn.execute(
+        "SELECT id, raw_json FROM rides WHERE raw_json IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        try:
+            raw = json.loads(row["raw_json"])
+        except (TypeError, ValueError):
+            continue
+        for p in raw.get("resumes") or []:
+            loc = p.get("lastLocation") or {}
+            conn.execute(
+                "INSERT INTO resumes (ride_id, estimated_time, automatic, lat, lon) VALUES (?, ?, ?, ?, ?)",
+                (row["id"], p.get("estimatedTime"), int(bool(p.get("automatic"))),
+                 loc.get("latitude"), loc.get("longitude")),
+            )
+    conn.commit()
+
+
 def claim_orphaned_data(conn: sqlite3.Connection, user_id: str) -> None:
     """One-time migration helper: if this is the very first account ever
     created on this database (the pre-multi-tenant → multi-tenant
@@ -382,6 +418,15 @@ def upsert_ride(conn: sqlite3.Connection, user_id: str, ride: dict) -> None:
         loc = p.get("lastLocation") or {}
         conn.execute(
             "INSERT INTO pauses (ride_id, estimated_time, automatic, lat, lon) VALUES (?, ?, ?, ?, ?)",
+            (ride["id"], p.get("estimatedTime"), int(bool(p.get("automatic"))),
+             loc.get("latitude"), loc.get("longitude")),
+        )
+
+    conn.execute("DELETE FROM resumes WHERE ride_id = ?", (ride["id"],))
+    for p in ride.get("resumes") or []:
+        loc = p.get("lastLocation") or {}
+        conn.execute(
+            "INSERT INTO resumes (ride_id, estimated_time, automatic, lat, lon) VALUES (?, ?, ?, ?, ?)",
             (ride["id"], p.get("estimatedTime"), int(bool(p.get("automatic"))),
              loc.get("latitude"), loc.get("longitude")),
         )
