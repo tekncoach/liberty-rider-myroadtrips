@@ -201,7 +201,19 @@
     transition: opacity .1s ease; z-index: 10;
   }
   .mini-chart-tooltip.visible { opacity: 1; }
-  #daylist { max-height: 220px; overflow-y: auto; border-top: 1px solid var(--border); }
+  #daylistHeader {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 20px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+    font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em;
+    background: var(--row-hover); cursor: pointer;
+  }
+  #daylistHeader:hover { color: var(--text); }
+  #daylistHeader button {
+    border: none; background: none; cursor: pointer; color: inherit; font-size: 16px;
+    padding: 2px 6px; line-height: 1;
+  }
+  #daylist { max-height: 220px; overflow-y: auto; }
+  #daylist.collapsed { display: none; }
   .day-row { padding: 8px 20px; border-bottom: 1px solid var(--border); font-size: 12px; display: flex; gap: 18px; align-items: center; cursor: pointer; }
   .day-row:hover { background: var(--row-hover); }
   .day-row.active { background: var(--accent-soft); }
