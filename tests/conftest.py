@@ -113,6 +113,7 @@ def make_ride(
     stop_lat=48.9,
     stop_lon=2.4,
     pauses=None,
+    resumes=None,
 ) -> dict:
     """Builds a ride dict shaped like the GraphQL `stoppedRides` payload,
     suitable for db.upsert_ride()."""
@@ -142,7 +143,13 @@ def make_ride(
         },
         "createdRoadbook": {},
         "pauses": pauses or [],
+        "resumes": resumes or [],
     }
+
+
+def make_event(estimated_time, *, automatic=True, lat=48.8, lon=2.3) -> dict:
+    """A single pause/resume entry, shaped like the GraphQL payload."""
+    return {"estimatedTime": estimated_time, "automatic": automatic, "lastLocation": {"latitude": lat, "longitude": lon}}
 
 
 @pytest.fixture
