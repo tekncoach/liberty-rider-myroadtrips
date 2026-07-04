@@ -492,6 +492,25 @@ async function openRideModal(id) {
       radius: 6, color: p.automatic ? "#e0552b" : "#2b7de0", weight: 2, fillOpacity: 0.5,
     }).addTo(map);
   }
+  // A button to get back to the whole-track view after zooming in on a
+  // pause or col marker (see wireChartMarkerZoom) — same corner/style as
+  // Leaflet's own zoom control.
+  const ResetViewControl = L.Control.extend({
+    options: { position: "topright" },
+    onAdd: () => {
+      const btn = L.DomUtil.create("button", "leaflet-bar ride-map-reset-btn");
+      btn.type = "button";
+      btn.innerHTML = "⤢";
+      btn.title = "Recentrer sur toute la trace";
+      L.DomEvent.on(btn, "click", (e) => {
+        L.DomEvent.stopPropagation(e);
+        if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
+      });
+      return btn;
+    },
+  });
+  map.addControl(new ResetViewControl());
+
   setTimeout(() => {
     map.invalidateSize();
     if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
@@ -900,6 +919,18 @@ function attachMiniChartTooltip(container, selector = ".mini-bar") {
   });
 }
 
+// Shared by pause dots and col markers on the elevation chart: clicking a
+// marker with data-lat/data-lon flies the ride's map to that spot.
+function wireChartMarkerZoom(markers) {
+  markers.forEach((marker) => {
+    marker.addEventListener("click", () => {
+      const map = state.rideModalMap;
+      if (!map || !marker.dataset.lat) return;
+      map.flyTo([Number(marker.dataset.lat), Number(marker.dataset.lon)], 14, { duration: 0.6 });
+    });
+  });
+}
+
 // Single-hue magnitude chart (km/day) — days are a comparison of one
 // measure, not distinct series, so all bars share the accent color; the
 // currently map-focused day (if any) is emphasized, the rest dimmed, same
@@ -1038,11 +1069,12 @@ async function renderElevationChart(rideId) {
   ).join("");
   const pauseDots = pauses.map((p) =>
     `<circle class="elevation-pause-dot" cx="${x(p.distance_km)}" cy="${y(p.elevation)}" r="2.5"
-       data-tooltip="Pause — ${p.distance_km.toFixed(1)} km — ${Math.round(p.elevation)} m"></circle>`
+       data-tooltip="Pause — ${p.distance_km.toFixed(1)} km — ${Math.round(p.elevation)} m"
+       data-lat="${p.lat}" data-lon="${p.lon}"></circle>`
   ).join("");
 
   el.innerHTML = `
-    <div class="l">altitude (estimée)</div>
+    <div class="l">altitude (estimée) <span id="colsLoading" class="cols-loading" title="Recherche des cols…">⋯</span></div>
     <svg class="elevation-chart" viewBox="0 0 ${VIEW_W} ${VIEW_H}" preserveAspectRatio="none" overflow="visible">
       <polygon class="elevation-fill" points="${fillPoints.join(" ")}"></polygon>
       <polyline class="elevation-line" points="${linePoints.join(" ")}"></polyline>
@@ -1056,11 +1088,13 @@ async function renderElevationChart(rideId) {
     <div class="mini-chart-tooltip"></div>
   `;
   attachMiniChartTooltip(el, ".elevation-hit, .elevation-pause-dot");
+  wireChartMarkerZoom(el.querySelectorAll(".elevation-pause-dot"));
 
   // Cols are fetched separately (see /api/rides/{id}/cols): a network call
   // per candidate peak against OpenStreetMap's Overpass, which can be slow
   // — the chart above must never wait on this, so it's appended once (if)
-  // this resolves, after the chart is already visible.
+  // this resolves, after the chart is already visible. #colsLoading gives
+  // a small visual cue that this lookup is still in flight.
   try {
     const colsData = await api(`/api/rides/${rideId}/cols`);
     if (state.rideModalId !== rideId) return;
@@ -1075,12 +1109,17 @@ async function renderElevationChart(rideId) {
       const cx = x(c.distance_km);
       const cy = y(c.elevation);
       return `<polygon class="elevation-col-marker" points="${cx},${cy - 9} ${cx - 4},${cy - 2} ${cx + 4},${cy - 2}"
-         data-tooltip="${c.name} — ${Math.round(c.elevation)} m — ${c.distance_km.toFixed(1)} km"></polygon>`;
+         data-tooltip="${c.name} — ${Math.round(c.elevation)} m — ${c.distance_km.toFixed(1)} km"
+         data-lat="${c.lat}" data-lon="${c.lon}"></polygon>`;
     }).join("");
     svg.insertAdjacentHTML("beforeend", colMarkers);
     attachMiniChartTooltip(el, ".elevation-col-marker");
+    wireChartMarkerZoom(el.querySelectorAll(".elevation-col-marker"));
   } catch (e) {
     // silent — fun/optional detail
+  } finally {
+    const loadingEl = document.getElementById("colsLoading");
+    if (loadingEl) loadingEl.remove();
   }
 }
 
