@@ -16,7 +16,9 @@ you're running this for yourself or hosting it for a few people.
 
 - **Sync** — pulls your full ride history (or just what's new) from Liberty
   Rider's GraphQL API into a local SQLite database.
-- **Roadtrips** — manually group rides into named, multi-day trips.
+- **Roadtrips** — manually group rides into named, multi-day trips, with a
+  collapsible day-by-day breakdown and a km/day histogram (rest days show
+  as visible gaps).
 - **Tags** — many-to-many labels for geographic zones (e.g. "Paris"),
   independent of any date range, so a place you keep passing through can
   accumulate rides over time.
@@ -24,10 +26,45 @@ you're running this for yourself or hosting it for a few people.
   into one back into a single logical ride; raw rows are never deleted, so
   a merge can be undone at any time. Same-day, near-zero-gap pairs are
   automatically flagged as merge candidates.
+- **Ride chronology** — a trajet/pause timeline per ride, each segment
+  sized by its real duration, built from Liberty Rider's own pause/resume
+  events (a field the app requests but never used to store).
+- **Estimated elevation profile** — Liberty Rider has no altitude-per-point
+  data anywhere; this app estimates one via the free
+  [open-elevation](https://www.open-elevation.com/) API (cached forever
+  per coordinate) and derives D+/D- and average moving speed from it.
+- **Named cols & summits** — detects the ride's own local elevation peaks
+  (by shape, not absolute altitude) and looks up a name for each via
+  OpenStreetMap's Overpass API — a through-route col (e.g. *Col du
+  Tourmalet*) or a dead-end summit (e.g. *Mont Ventoux*) alike. Found
+  names are persisted per ride, so they become searchable over time.
+- **Notes & search** — a free-text note per ride, and a search box in "Mes
+  traces" (title, note, and any discovered col names), accent-insensitive,
+  entirely client-side.
 - **Map view** — every ride, roadtrip, and tag rendered on a Leaflet /
   OpenStreetMap map, color-coded per day, with ride preview thumbnails
   pulled from Liberty Rider's own static tile server.
 - **GPX export** — download any ride, roadtrip, or tag as a GPX file.
+
+## Data & external services
+
+Besides Liberty Rider's own (undocumented) API, two free public services
+are used, only ever sent a ride's GPS coordinates (never any account
+info):
+
+- **[open-elevation.com](https://www.open-elevation.com/)** — estimates
+  altitude for points along a ride's track. Every coordinate looked up is
+  cached forever (`elevation_cache` table) so it's never queried twice.
+- **[Overpass API](https://overpass-api.de/)** (OpenStreetMap) — looks up
+  the name of a col/summit near a detected elevation peak. Also cached
+  forever (`mountain_pass_cache`), including a "nothing named nearby"
+  result, so a transient failure is *not* cached — only a completed query
+  is (see `mountain_pass.py`).
+
+Both are free, keyless, and rate-limited — expect the elevation chart and
+col names to sometimes take a moment on a ride you haven't opened before,
+especially over a long or previously-unseen track. Neither is required for
+the app to work; both fail silently if unavailable.
 
 ## Screenshots
 

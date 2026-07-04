@@ -54,14 +54,38 @@ again); **502** on any other Liberty Rider API error.
 ### `GET /api/rides?grouped={true|false}`
 Lists rides. Omit `grouped` for everything; `true` for rides already in a
 roadtrip; `false` for ungrouped rides only. Each ride includes `tags`,
-`merge_ride_ids`, and the grouping-suggestion fields
-(`suggested_link_prev`/`_next`, `merge_candidate_prev_id`/`_next_id`) —
-see `docs/ARCHITECTURE.md` for what drives them. Absorbed merge members are
-never included; only merge representatives are.
+`merge_ride_ids`, `notes`, `col_names` (names discovered so far via
+`GET /api/rides/{id}/cols` — empty until that ride's detail has been
+opened at least once, see `docs/ARCHITECTURE.md`), and the
+grouping-suggestion fields (`suggested_link_prev`/`_next`,
+`merge_candidate_prev_id`/`_next_id`). Absorbed merge members are never
+included; only merge representatives are.
 
 ### `GET /api/rides/{ride_id}`
 Full detail for one ride: same fields as the list, plus `polyline` (decoded
-`[lat, lon]` pairs) and `pauses`.
+`[lat, lon]` pairs), `pauses`, and `timeline` — a list of
+`{type: "ride"|"pause", start, end}` segments spanning the whole ride (see
+`docs/ARCHITECTURE.md`).
+
+### `GET /api/rides/{ride_id}/elevation`
+Estimated elevation profile, resampled to ~60 points by distance:
+`{ profile: [{distance_km, elevation}, ...], pauses: [{distance_km,
+elevation, automatic, lat, lon}, ...], elevation_gain, elevation_loss }`.
+`elevation`/`elevation_gain`/`elevation_loss` can be `null` if
+open-elevation was unavailable. Does not include col names — see below.
+
+### `GET /api/rides/{ride_id}/cols`
+Named cols/summits detected along the ride:
+`{ cols: [{distance_km, elevation, name, lat, lon}, ...] }` — only named
+detections are included (an unnamed peak is dropped). Deliberately a
+separate, slower endpoint from `/elevation` (one Overpass network call per
+candidate peak) — see `docs/ARCHITECTURE.md`. Also persists found names to
+the `ride_cols` table as a side effect, making them searchable via
+`GET /api/rides`'s `col_names`.
+
+### `PATCH /api/rides/{ride_id}/notes`
+Body: `{ "notes": "..." }`. Sets (or clears, if blank) a free-text note on
+the ride. Returns `{ "notes": "..." }` (trimmed; empty string if cleared).
 
 ### `POST /api/rides/merge`
 Body: `{ "ride_ids": ["id1", "id2", ...] }` (2+). Merges them into one
