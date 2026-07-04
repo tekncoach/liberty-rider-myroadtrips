@@ -744,6 +744,8 @@ def api_ride_elevation(ride_id: str, user=Depends(get_session_user)):
                 "distance_km": round(cum[i], 2),
                 "elevation": elevations[len(sample_idx) + k],
                 "automatic": valid_pauses[k]["automatic"],
+                "lat": valid_pauses[k]["lat"],
+                "lon": valid_pauses[k]["lon"],
             }
             for k, i in enumerate(pause_idx)
         ]
@@ -796,6 +798,8 @@ def api_ride_cols(ride_id: str, user=Depends(get_session_user)):
                     "distance_km": profile[i]["distance_km"],
                     "elevation": refined_elev if refined_elev is not None else profile[i]["elevation"],
                     "name": name,
+                    "lat": lat,
+                    "lon": lon,
                 })
         return {"cols": cols}
     finally:
