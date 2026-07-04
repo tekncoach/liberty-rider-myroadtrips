@@ -450,6 +450,7 @@ async function openRideModal(id) {
   `;
   document.getElementById("rideModalGpx").href = `/api/rides/${ride.id}/export.gpx`;
   renderRideTimeline(ride);
+  renderElevationChart(ride.id);
   renderRideModalTags(ride.tags || []);
   renderRideModalMerge(ride);
   const notesEl = document.getElementById("rideModalNotesText");
@@ -951,6 +952,69 @@ function renderRideTimeline(ride) {
     <div class="mini-chart-tooltip"></div>
   `;
   attachMiniChartTooltip(el, ".ride-timeline-seg");
+}
+
+// Elevation is estimated (see /api/rides/{id}/elevation — Liberty Rider has
+// no per-point altitude data at all), fetched separately from the rest of
+// the modal since open-elevation can be slow on an uncached track — this
+// must never block or break the modal if it's slow or unavailable, it's a
+// fun/optional detail (e.g. spotting a pause taken at the ride's high
+// point, for a photo).
+async function renderElevationChart(rideId) {
+  const el = document.getElementById("rideModalElevation");
+  el.innerHTML = "";
+  let data;
+  try {
+    data = await api(`/api/rides/${rideId}/elevation`);
+  } catch (e) {
+    return; // silent — optional feature, never surface an error for it
+  }
+  if (state.rideModalId !== rideId) return; // modal moved on to another ride meanwhile
+
+  const profile = (data.profile || []).filter((p) => p.elevation != null);
+  if (profile.length < 2) return;
+  const pauses = (data.pauses || []).filter((p) => p.elevation != null);
+
+  // A square 0-100 viewBox would distort circles into ellipses once
+  // stretched to a wide, short chart — approximate the real rendered box
+  // (matches #rideModal's width minus padding) so pause/hover dots stay
+  // circular instead of measuring the DOM for a "fun" optional feature.
+  const VIEW_W = 684;
+  const VIEW_H = 70;
+  const maxDistance = profile[profile.length - 1].distance_km || 1;
+  const elevations = profile.map((p) => p.elevation);
+  const minElev = Math.min(...elevations);
+  const maxElev = Math.max(...elevations);
+  const elevRange = maxElev - minElev || 1;
+  const x = (km) => (km / maxDistance) * VIEW_W;
+  const y = (elev) => VIEW_H - ((elev - minElev) / elevRange) * VIEW_H;
+
+  const linePoints = profile.map((p) => `${x(p.distance_km)},${y(p.elevation)}`);
+  const fillPoints = [`${x(profile[0].distance_km)},${VIEW_H}`, ...linePoints, `${x(profile[profile.length - 1].distance_km)},${VIEW_H}`];
+  const hitCircles = profile.map((p) =>
+    `<circle class="elevation-hit" cx="${x(p.distance_km)}" cy="${y(p.elevation)}" r="3"
+       data-tooltip="${p.distance_km.toFixed(1)} km — ${Math.round(p.elevation)} m"></circle>`
+  ).join("");
+  const pauseDots = pauses.map((p) =>
+    `<circle class="elevation-pause-dot" cx="${x(p.distance_km)}" cy="${y(p.elevation)}" r="2.5"
+       data-tooltip="Pause — ${p.distance_km.toFixed(1)} km — ${Math.round(p.elevation)} m"></circle>`
+  ).join("");
+
+  el.innerHTML = `
+    <div class="l">altitude (estimée)</div>
+    <svg class="elevation-chart" viewBox="0 0 ${VIEW_W} ${VIEW_H}" preserveAspectRatio="none">
+      <polygon class="elevation-fill" points="${fillPoints.join(" ")}"></polygon>
+      <polyline class="elevation-line" points="${linePoints.join(" ")}"></polyline>
+      ${hitCircles}
+      ${pauseDots}
+    </svg>
+    <div class="elevation-labels">
+      <span>0 km</span>
+      <span>${maxDistance.toFixed(1)} km</span>
+    </div>
+    <div class="mini-chart-tooltip"></div>
+  `;
+  attachMiniChartTooltip(el, ".elevation-hit, .elevation-pause-dot");
 }
 
 (async () => {

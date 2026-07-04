@@ -79,6 +79,20 @@ CREATE TABLE IF NOT EXISTS resumes (
   lat REAL, lon REAL
 );
 
+-- Liberty Rider has no altitude-per-point data anywhere (verified via
+-- GraphQL introspection and its own GPX export — only a single
+-- maximumAltitude scalar per ride exists). Elevation is instead estimated
+-- via the open-elevation API and cached here forever, keyed by lat/lon
+-- rounded to ~11m — open-elevation is free but slow/rate-limited, and
+-- this is the one feature in the app with a real (if currently free)
+-- external cost, so it's a candidate to gate behind a premium tier later.
+CREATE TABLE IF NOT EXISTS elevation_cache (
+  lat REAL NOT NULL,
+  lon REAL NOT NULL,
+  elevation REAL NOT NULL,
+  PRIMARY KEY (lat, lon)
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   user_id TEXT REFERENCES users(id),
   key TEXT NOT NULL,

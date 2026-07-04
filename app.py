@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import db
+import elevation
 import sync as sync_module
 from firebase_refresh import refresh_id_token, sign_in_with_password
 from liberty_client import LibertyRiderClient
@@ -275,6 +276,39 @@ def _polylines_and_pauses(conn, ride_rows) -> tuple[dict, dict]:
         polylines[r["id"]] = points
         pauses[r["id"]] = p
     return polylines, pauses
+
+
+def _resample_indices(cum: list[float], target_count: int) -> list[int]:
+    """Picks ~target_count point indices evenly spaced by cumulative
+    distance (not raw index) — GPS points cluster tighter at low speed or
+    during a pause, so index-based sampling would over-represent them."""
+    n = len(cum)
+    if n <= target_count:
+        return list(range(n))
+    total = cum[-1]
+    if total == 0:
+        step = (n - 1) / (target_count - 1)
+        return sorted({round(i * step) for i in range(target_count)})
+    step = total / (target_count - 1)
+    indices = []
+    idx = 0
+    for k in range(target_count):
+        target = step * k
+        while idx < n - 1 and cum[idx] < target:
+            idx += 1
+        indices.append(idx)
+    if indices[-1] != n - 1:
+        indices.append(n - 1)
+    return sorted(set(indices))
+
+
+def _nearest_point_index(points: list[tuple[float, float]], lat: float, lon: float) -> int:
+    best_i, best_d = 0, float("inf")
+    for i, (plat, plon) in enumerate(points):
+        d = (plat - lat) ** 2 + (plon - lon) ** 2
+        if d < best_d:
+            best_d, best_i = d, i
+    return best_i
 
 
 def _group_by_day(rides: list[dict]) -> list[dict]:
@@ -606,6 +640,48 @@ def api_ride_detail(ride_id: str, user=Depends(get_session_user)):
         ride["timeline"] = _merged_ride_timeline(conn, row)
         ride["tags"] = _ride_tags(conn, ride_id)
         return ride
+    finally:
+        conn.close()
+
+
+@app.get("/api/rides/{ride_id}/elevation")
+def api_ride_elevation(ride_id: str, user=Depends(get_session_user)):
+    """Elevation profile along the track, resampled to ~60 points by
+    distance, plus each pause projected onto its nearest track point (fun
+    detail: spot a pause taken at the highest point of the ride, e.g. for a
+    photo). Estimated via open-elevation (see elevation.py) since Liberty
+    Rider itself has no per-point altitude data at all."""
+    conn = db.connect()
+    try:
+        row = _get_owned_ride(conn, ride_id, user["id"])
+        points, pauses = _merged_polyline_and_pauses(conn, row)
+        if not points:
+            return {"profile": [], "pauses": []}
+
+        cum = [0.0]
+        for i in range(1, len(points)):
+            cum.append(cum[-1] + (haversine_km(*points[i - 1], *points[i]) or 0))
+
+        sample_idx = _resample_indices(cum, target_count=60)
+        valid_pauses = [p for p in pauses if p["lat"] is not None and p["lon"] is not None]
+        pause_idx = [_nearest_point_index(points, p["lat"], p["lon"]) for p in valid_pauses]
+
+        all_points = [points[i] for i in sample_idx] + [points[i] for i in pause_idx]
+        elevations = elevation.get_elevations(conn, all_points)
+
+        profile = [
+            {"distance_km": round(cum[i], 2), "elevation": elevations[k]}
+            for k, i in enumerate(sample_idx)
+        ]
+        pause_markers = [
+            {
+                "distance_km": round(cum[i], 2),
+                "elevation": elevations[len(sample_idx) + k],
+                "automatic": valid_pauses[k]["automatic"],
+            }
+            for k, i in enumerate(pause_idx)
+        ]
+        return {"profile": profile, "pauses": pause_markers}
     finally:
         conn.close()
 
