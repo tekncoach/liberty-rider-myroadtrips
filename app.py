@@ -681,7 +681,19 @@ def api_ride_elevation(ride_id: str, user=Depends(get_session_user)):
             }
             for k, i in enumerate(pause_idx)
         ]
-        return {"profile": profile, "pauses": pause_markers}
+        # D+/D- summed over the ~60-point resampled profile, not raw GPS —
+        # already an estimate (open-elevation, not measured), so this is an
+        # approximation of an approximation; good enough for a fun stat, not
+        # a precise instrument reading.
+        known_elevations = [p["elevation"] for p in profile if p["elevation"] is not None]
+        gain = sum(max(b - a, 0) for a, b in zip(known_elevations, known_elevations[1:]))
+        loss = sum(max(a - b, 0) for a, b in zip(known_elevations, known_elevations[1:]))
+        return {
+            "profile": profile,
+            "pauses": pause_markers,
+            "elevation_gain": round(gain) if known_elevations else None,
+            "elevation_loss": round(loss) if known_elevations else None,
+        }
     finally:
         conn.close()
 

@@ -54,6 +54,10 @@ function fmtTime(d) {
 function fmtAlt(m) {
   return m == null ? "–" : Math.round(m) + " m";
 }
+function fmtAvgSpeed(distanceM, movingS) {
+  if (!movingS) return "–";
+  return Math.round((distanceM / 1000) / (movingS / 3600)) + " km/h";
+}
 function escapeHtml(s) {
   return (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -447,6 +451,8 @@ async function openRideModal(id) {
     <div class="stat"><div class="v">${fmtKm(ride.distance)}</div><div class="l">Distance</div></div>
     <div class="stat"><div class="v">${fmtAlt(ride.maximum_altitude)}</div><div class="l">Altitude max.</div></div>
     <div class="stat"><div class="v">${ride.pause_count ?? 0}</div><div class="l">Pauses</div></div>
+    <div class="stat"><div class="v">${fmtAvgSpeed(ride.distance, ride.duration_without_pauses)}</div><div class="l">Vitesse moy. (roulant)</div></div>
+    <div class="stat"><div class="v" id="rideModalElevGain">…</div><div class="l">Dénivelé (D+ / D-)</div></div>
   `;
   document.getElementById("rideModalGpx").href = `/api/rides/${ride.id}/export.gpx`;
   renderRideTimeline(ride);
@@ -963,13 +969,21 @@ function renderRideTimeline(ride) {
 async function renderElevationChart(rideId) {
   const el = document.getElementById("rideModalElevation");
   el.innerHTML = "";
+  const elevGainEl = document.getElementById("rideModalElevGain");
   let data;
   try {
     data = await api(`/api/rides/${rideId}/elevation`);
   } catch (e) {
+    if (elevGainEl) elevGainEl.textContent = "–";
     return; // silent — optional feature, never surface an error for it
   }
   if (state.rideModalId !== rideId) return; // modal moved on to another ride meanwhile
+
+  if (elevGainEl) {
+    elevGainEl.textContent = data.elevation_gain != null
+      ? `+${Math.round(data.elevation_gain)} / -${Math.round(data.elevation_loss)} m`
+      : "–";
+  }
 
   const profile = (data.profile || []).filter((p) => p.elevation != null);
   if (profile.length < 2) return;
