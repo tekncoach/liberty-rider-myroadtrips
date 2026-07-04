@@ -16,8 +16,7 @@ const state = {
   map: null,
   rideModalMap: null,
   rideModalId: null,
-  showTiles: localStorage.getItem("showTiles") !== "0",
-  showAll: false,
+  showAll: localStorage.getItem("showAll") === "1",
   collapsedYears: new Set(),
   collapsedTripYears: new Set(),
 };
@@ -168,19 +167,12 @@ function switchTab(tab) {
   renderList();
 }
 
-// --- tiles toggle ---
-const tilesToggle = document.getElementById("tilesToggle");
-tilesToggle.checked = state.showTiles;
-tilesToggle.addEventListener("change", (e) => {
-  state.showTiles = e.target.checked;
-  localStorage.setItem("showTiles", state.showTiles ? "1" : "0");
-  renderList();
-});
-
 // --- show grouped/tagged toggle ---
 const showAllToggle = document.getElementById("showAllToggle");
+showAllToggle.checked = state.showAll;
 showAllToggle.addEventListener("change", (e) => {
   state.showAll = e.target.checked;
+  localStorage.setItem("showAll", state.showAll ? "1" : "0");
   renderList();
 });
 
@@ -322,7 +314,7 @@ function renderUngroupedRow(r) {
   const row = document.createElement("div");
   const isHandled = Boolean(r.roadtrip_id) || Boolean(r.tags && r.tags.length);
   const isMerge = (r.merge_ride_ids || []).length > 1;
-  row.className = "ride-row" + (state.showTiles ? "" : " no-tiles") + (isHandled ? " handled" : "");
+  row.className = "ride-row" + (isHandled ? " handled" : "");
   const badges = [];
   // List is sorted newest → oldest: the earlier ride ("précédent") sits BELOW
   // this row, the later ride ("suivant") sits ABOVE — arrows point there.
@@ -626,10 +618,10 @@ async function showTagDetail(id) {
       <div class="stat"><div class="v">${fmtKm(tag.total_distance)}</div><div class="l">distance</div></div>
       <div class="stat"><div class="v">${fmtDuration(tag.total_duration)}</div><div class="l">durée totale</div></div>
       <div class="stat"><div class="v">${tag.total_pause_count}</div><div class="l">pauses</div></div>
+      <div id="kmChart" class="mini-chart"></div>
       <label id="pausesToggleLabel"><input type="checkbox" id="pausesToggle" /> Afficher les pauses</label>
     </div>
     <div id="mapview"></div>
-    <div id="kmChart" class="mini-chart"></div>
     <div id="daylist"></div>
   `;
 
