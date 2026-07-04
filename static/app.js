@@ -575,8 +575,10 @@ async function showTripDetail(id) {
       <label id="pausesToggleLabel"><input type="checkbox" id="pausesToggle" /> Afficher les pauses</label>
     </div>
     <div id="mapview"></div>
+    <div id="daylistHeader"><span>Étapes</span><button id="daylistToggle">▾</button></div>
     <div id="daylist"></div>
   `;
+  setupDaylistToggle();
 
   document.getElementById("pausesToggle").addEventListener("change", (e) => {
     togglePauseLayer(e.target.checked);
@@ -622,8 +624,10 @@ async function showTagDetail(id) {
       <label id="pausesToggleLabel"><input type="checkbox" id="pausesToggle" /> Afficher les pauses</label>
     </div>
     <div id="mapview"></div>
+    <div id="daylistHeader"><span>Étapes</span><button id="daylistToggle">▾</button></div>
     <div id="daylist"></div>
   `;
+  setupDaylistToggle();
 
   document.getElementById("pausesToggle").addEventListener("change", (e) => {
     togglePauseLayer(e.target.checked);
@@ -648,6 +652,22 @@ async function showTagDetail(id) {
   renderDayList(tag);
   renderKmChart(tag, false);
   renderMap(tag);
+}
+
+// Collapsed by default? No — always starts open on a fresh roadtrip/tag
+// view (matches the "pausesToggle" convention: per-view UI state, not
+// persisted across navigation). Collapsing just hides #daylist; #mapview's
+// flex:1 then expands into the freed space on its own.
+function setupDaylistToggle() {
+  const header = document.getElementById("daylistHeader");
+  const btn = document.getElementById("daylistToggle");
+  const daylist = document.getElementById("daylist");
+  header.addEventListener("click", () => {
+    const collapsed = daylist.classList.toggle("collapsed");
+    btn.textContent = collapsed ? "▸" : "▾";
+    header.title = collapsed ? "Agrandir" : "Réduire";
+    setTimeout(() => state.map && state.map.invalidateSize(), 0);
+  });
 }
 
 function renderDayList(trip) {
