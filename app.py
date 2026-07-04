@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 import db
 import elevation
+import mountain_pass
 import sync as sync_module
 from firebase_refresh import refresh_id_token, sign_in_with_password
 from liberty_client import LibertyRiderClient
@@ -309,6 +310,57 @@ def _nearest_point_index(points: list[tuple[float, float]], lat: float, lon: flo
         if d < best_d:
             best_d, best_i = d, i
     return best_i
+
+
+def _detect_peaks(profile: list[dict], min_prominence_m: float = 100) -> list[int]:
+    """Indices (into `profile`) of local elevation maxima with at least
+    `min_prominence_m` of prominence over the rest of the ride's own
+    profile. A col is defined by shape — it climbs, then descends — not by
+    absolute altitude, so a 300m pass and a 2000m pass are detected the
+    same way."""
+    indices = []
+    n = len(profile)
+    for i in range(1, n - 1):
+        cur, prev, nxt = profile[i]["elevation"], profile[i - 1]["elevation"], profile[i + 1]["elevation"]
+        if cur is None or prev is None or nxt is None or not (cur > prev and cur > nxt):
+            continue
+        left_min = min((p["elevation"] for p in profile[:i + 1] if p["elevation"] is not None), default=cur)
+        right_min = min((p["elevation"] for p in profile[i:] if p["elevation"] is not None), default=cur)
+        if cur - max(left_min, right_min) >= min_prominence_m:
+            indices.append(i)
+    return indices
+
+
+def _refine_peak_point(conn, points, sample_idx, pauses, peak_i, window_samples=15):
+    """The 60-point resampled profile is coarse (~5km apart on a long
+    ride) — a detected peak's coarse sample can land geographically closer
+    to a nearby col than to the true summit a few hundred meters away
+    (seen on real data: Mont Ventoux vs. the adjacent Col des Tempêtes).
+    Refine by densely sampling the raw GPS points between the peak's
+    neighboring coarse samples, plus any pause recorded along that same
+    stretch (a rider stopping at a summit is often a very precise fix on
+    exactly where the true high point was) — whichever candidate has the
+    highest estimated elevation wins."""
+    lo = sample_idx[peak_i - 1] if peak_i > 0 else sample_idx[peak_i]
+    hi = sample_idx[peak_i + 1] if peak_i < len(sample_idx) - 1 else sample_idx[peak_i]
+    if hi <= lo:
+        lo = hi = sample_idx[peak_i]
+    step = max((hi - lo) // window_samples, 1)
+    window_idx = sorted(set(range(lo, hi + 1, step)) | {hi})
+    candidates = [points[i] for i in window_idx]
+
+    for p in pauses:
+        if p.get("lat") is None or p.get("lon") is None:
+            continue
+        if lo <= _nearest_point_index(points, p["lat"], p["lon"]) <= hi:
+            candidates.append((p["lat"], p["lon"]))
+
+    elevations = elevation.get_elevations(conn, candidates)
+    known = [(pt, e) for pt, e in zip(candidates, elevations) if e is not None]
+    if not known:
+        return points[sample_idx[peak_i]], None
+    (lat, lon), best_elev = max(known, key=lambda t: t[1])
+    return (lat, lon), best_elev
 
 
 def _group_by_day(rides: list[dict]) -> list[dict]:
@@ -644,25 +696,39 @@ def api_ride_detail(ride_id: str, user=Depends(get_session_user)):
         conn.close()
 
 
+def _ride_track_samples(conn, row):
+    """Decoded polyline, cumulative distance per point, and ~60 indices
+    sampled evenly by distance — shared by /elevation and /cols so both
+    resample the same track the same way."""
+    points, pauses = _merged_polyline_and_pauses(conn, row)
+    if not points:
+        return points, pauses, [], []
+    cum = [0.0]
+    for i in range(1, len(points)):
+        cum.append(cum[-1] + (haversine_km(*points[i - 1], *points[i]) or 0))
+    sample_idx = _resample_indices(cum, target_count=60)
+    return points, pauses, cum, sample_idx
+
+
 @app.get("/api/rides/{ride_id}/elevation")
 def api_ride_elevation(ride_id: str, user=Depends(get_session_user)):
     """Elevation profile along the track, resampled to ~60 points by
     distance, plus each pause projected onto its nearest track point (fun
     detail: spot a pause taken at the highest point of the ride, e.g. for a
     photo). Estimated via open-elevation (see elevation.py) since Liberty
-    Rider itself has no per-point altitude data at all."""
+    Rider itself has no per-point altitude data at all.
+
+    Named mountain passes are a separate endpoint (/cols) — not computed
+    here — since Overpass lookups are one network call per candidate peak
+    and can be slow; this endpoint must stay fast so the chart itself
+    always renders instantly, even on a ride with no cols at all."""
     conn = db.connect()
     try:
         row = _get_owned_ride(conn, ride_id, user["id"])
-        points, pauses = _merged_polyline_and_pauses(conn, row)
+        points, pauses, cum, sample_idx = _ride_track_samples(conn, row)
         if not points:
-            return {"profile": [], "pauses": []}
+            return {"profile": [], "pauses": [], "elevation_gain": None, "elevation_loss": None}
 
-        cum = [0.0]
-        for i in range(1, len(points)):
-            cum.append(cum[-1] + (haversine_km(*points[i - 1], *points[i]) or 0))
-
-        sample_idx = _resample_indices(cum, target_count=60)
         valid_pauses = [p for p in pauses if p["lat"] is not None and p["lon"] is not None]
         pause_idx = [_nearest_point_index(points, p["lat"], p["lon"]) for p in valid_pauses]
 
@@ -688,12 +754,50 @@ def api_ride_elevation(ride_id: str, user=Depends(get_session_user)):
         known_elevations = [p["elevation"] for p in profile if p["elevation"] is not None]
         gain = sum(max(b - a, 0) for a, b in zip(known_elevations, known_elevations[1:]))
         loss = sum(max(a - b, 0) for a, b in zip(known_elevations, known_elevations[1:]))
+
         return {
             "profile": profile,
             "pauses": pause_markers,
             "elevation_gain": round(gain) if known_elevations else None,
             "elevation_loss": round(loss) if known_elevations else None,
         }
+    finally:
+        conn.close()
+
+
+@app.get("/api/rides/{ride_id}/cols")
+def api_ride_cols(ride_id: str, user=Depends(get_session_user)):
+    """Named mountain passes along the track (see mountain_pass.py and
+    _detect_peaks) — kept separate from /elevation precisely because this
+    is the slow part (a network round-trip per candidate peak); the
+    frontend fetches it after the chart has already rendered."""
+    conn = db.connect()
+    try:
+        row = _get_owned_ride(conn, ride_id, user["id"])
+        points, pauses, cum, sample_idx = _ride_track_samples(conn, row)
+        if not points:
+            return {"cols": []}
+
+        elevations = elevation.get_elevations(conn, [points[i] for i in sample_idx])
+        profile = [
+            {"distance_km": round(cum[i], 2), "elevation": elevations[k]}
+            for k, i in enumerate(sample_idx)
+        ]
+
+        # Only named passes are worth marking — an unnamed peak is just
+        # noise on the chart, so unnamed detections are silently dropped.
+        valid_pauses = [p for p in pauses if p.get("lat") is not None and p.get("lon") is not None]
+        cols = []
+        for i in _detect_peaks(profile):
+            (lat, lon), refined_elev = _refine_peak_point(conn, points, sample_idx, valid_pauses, i)
+            name = mountain_pass.get_pass_name(conn, lat, lon, hint_elevation=refined_elev)
+            if name:
+                cols.append({
+                    "distance_km": profile[i]["distance_km"],
+                    "elevation": refined_elev if refined_elev is not None else profile[i]["elevation"],
+                    "name": name,
+                })
+        return {"cols": cols}
     finally:
         conn.close()
 

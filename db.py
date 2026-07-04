@@ -93,6 +93,17 @@ CREATE TABLE IF NOT EXISTS elevation_cache (
   PRIMARY KEY (lat, lon)
 );
 
+-- Named mountain passes near a detected elevation peak (see
+-- mountain_pass.py), looked up via OpenStreetMap's Overpass API. `name` is
+-- NULL when no named pass was found nearby — that's cached too, so an
+-- unnamed peak isn't re-queried on every ride reopen.
+CREATE TABLE IF NOT EXISTS mountain_pass_cache (
+  lat REAL NOT NULL,
+  lon REAL NOT NULL,
+  name TEXT,
+  PRIMARY KEY (lat, lon)
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   user_id TEXT REFERENCES users(id),
   key TEXT NOT NULL,

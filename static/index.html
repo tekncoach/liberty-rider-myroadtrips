@@ -249,18 +249,33 @@
   }
   #rideModalBackdrop.visible { display: flex; }
   #rideModal {
-    width: min(720px, 92vw); max-height: 88vh; display: flex; flex-direction: column;
+    width: min(720px, 92vw); height: 88vh; display: flex; flex-direction: column;
     background: var(--panel); border-radius: 12px; overflow: hidden; box-shadow: 0 8px 30px #00000040;
   }
   #rideModalHead { padding: 14px 18px 4px; display: flex; align-items: center; gap: 10px; }
-  #rideModalHead h2 { font-size: 15.5px; margin: 0; flex: 1; }
+  #rideModalHead h2 { font-size: 15.5px; margin: 0; flex: 1; min-width: 0; }
+  #rideModalHead button { white-space: nowrap; }
   #rideModalSubtitle { padding: 0 18px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
-  #rideModalStats { padding: 12px 18px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 10px; border-bottom: 1px solid var(--border); }
+  #rideModalDetailsHeader {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 18px; border-bottom: 1px solid var(--border);
+    font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em;
+    background: var(--row-hover); cursor: pointer;
+  }
+  #rideModalDetailsHeader:hover { color: var(--text); }
+  #rideModalDetailsHeader button {
+    border: none; background: none; cursor: pointer; color: inherit; font-size: 16px;
+    padding: 2px 6px; line-height: 1;
+  }
+  #rideModalDetailsBody.collapsed { display: none; }
+  #rideModalStats, #rideModalStatsTrack {
+    padding: 4px 18px 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 10px; border-bottom: 1px solid var(--border);
+  }
   #rideModalTimeline {
-    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    padding: 12px 18px 0;
     flex: none; max-width: none;
   }
-  #rideModalTimeline:empty { padding: 0; border-bottom: none; }
+  #rideModalTimeline:empty { padding: 0; }
   .ride-timeline-legend { display: flex; gap: 12px; font-size: 10px; color: var(--muted); margin-bottom: 5px; }
   .ride-timeline-legend .swatch {
     display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle;
@@ -274,17 +289,19 @@
   .ride-timeline-seg.pause { background: var(--pause); }
   .ride-timeline-labels { display: flex; justify-content: space-between; margin-top: 3px; font-size: 9px; color: var(--muted); }
   #rideModalElevation {
-    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    padding: 12px 18px 0;
     flex: none; max-width: none; position: relative;
   }
-  #rideModalElevation:empty { padding: 0; border-bottom: none; }
+  #rideModalElevation:empty { padding: 0; }
   .elevation-chart { width: 100%; height: 70px; display: block; overflow: visible; }
   .elevation-fill { fill: var(--accent); opacity: 0.12; }
   .elevation-line { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
   .elevation-hit { fill: transparent; cursor: crosshair; }
   .elevation-pause-dot { fill: var(--pause); stroke: var(--panel); stroke-width: 1; cursor: pointer; }
+  .elevation-col-marker { fill: var(--text); opacity: 0.75; cursor: pointer; transition: opacity .12s ease; }
+  .elevation-col-marker:hover { opacity: 1; }
   .elevation-labels { display: flex; justify-content: space-between; margin-top: 3px; font-size: 9px; color: var(--muted); }
-  #rideModalMap { height: 320px; flex: none; }
+  #rideModalMap { flex: 1; min-height: 200px; }
   #rideModalNotes { padding: 10px 18px; border-bottom: 1px solid var(--border); }
   #rideModalNotesText {
     font-size: 12.5px; line-height: 1.45; min-height: 1.4em; outline: none; white-space: pre-wrap;
@@ -300,7 +317,6 @@
     padding: 3px 5px 3px 9px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
   .tag-chip button { border: none; background: none; padding: 0 3px; font-size: 12px; line-height: 1; color: inherit; cursor: pointer; }
   #rideModalTagInput { padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; width: 130px; }
-  #rideModalFoot { padding: 10px 18px; display: flex; justify-content: flex-end; gap: 8px; }
 
   ::-webkit-scrollbar { width: 9px; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
@@ -389,12 +405,17 @@
   <div id="rideModal">
     <div id="rideModalHead">
       <h2 id="rideModalTitle"></h2>
+      <a id="rideModalGpx" href="#"><button>Télécharger en GPX</button></a>
       <button id="rideModalClose">Fermer</button>
     </div>
     <div id="rideModalSubtitle"></div>
-    <div id="rideModalStats"></div>
-    <div id="rideModalTimeline" class="mini-chart"></div>
-    <div id="rideModalElevation"></div>
+    <div id="rideModalDetailsHeader"><span>Détails</span><button id="rideModalDetailsToggle">▾</button></div>
+    <div id="rideModalDetailsBody">
+      <div id="rideModalTimeline" class="mini-chart"></div>
+      <div id="rideModalStats"></div>
+      <div id="rideModalElevation" class="mini-chart"></div>
+      <div id="rideModalStatsTrack"></div>
+    </div>
     <div id="rideModalNotes">
       <div id="rideModalNotesText" contenteditable="true" data-placeholder="Ajoute une note sur ce trajet… (un souvenir, un point de repère, une info utile)"></div>
     </div>
@@ -404,9 +425,6 @@
     </div>
     <div id="rideModalMerge"></div>
     <div id="rideModalMap"></div>
-    <div id="rideModalFoot">
-      <a id="rideModalGpx" href="#"><button>Télécharger en GPX</button></a>
-    </div>
   </div>
 </div>
 
