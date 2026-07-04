@@ -98,6 +98,71 @@ def test_upsert_ride_replaces_pauses(conn):
     assert conn.execute("SELECT COUNT(*) AS n FROM pauses WHERE ride_id = 'r1'").fetchone()["n"] == 0
 
 
+def test_upsert_ride_replaces_resumes(conn):
+    ride = make_ride(
+        "r1",
+        "2024-01-01T10:00:00Z",
+        resumes=[{"estimatedTime": "2024-01-01T10:35:00Z", "automatic": True, "lastLocation": {"latitude": 1.0, "longitude": 2.0}}],
+    )
+    db_module.upsert_ride(conn, "u1", ride)
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) AS n FROM resumes WHERE ride_id = 'r1'").fetchone()["n"] == 1
+
+    ride_no_resumes = make_ride("r1", "2024-01-01T10:00:00Z", resumes=[])
+    db_module.upsert_ride(conn, "u1", ride_no_resumes)
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) AS n FROM resumes WHERE ride_id = 'r1'").fetchone()["n"] == 0
+
+
+# --- _backfill_resumes_from_raw_json ----------------------------------------
+
+
+def test_backfill_resumes_restores_from_raw_json(conn):
+    # The GraphQL query has always requested `resumes`, so a ride synced
+    # before the `resumes` table existed still has it recorded in raw_json —
+    # the backfill's whole point is to recover it from there with no resync.
+    ride = make_ride(
+        "r1",
+        "2024-01-01T10:00:00Z",
+        pauses=[{"estimatedTime": "2024-01-01T10:30:00Z", "automatic": True, "lastLocation": {"latitude": 1.0, "longitude": 2.0}}],
+        resumes=[{"estimatedTime": "2024-01-01T10:35:00Z", "automatic": True, "lastLocation": {"latitude": 1.0, "longitude": 2.0}}],
+    )
+    db_module.upsert_ride(conn, "u1", ride)
+    conn.commit()
+
+    # Simulate the pre-migration state: raw_json already has `resumes`, but
+    # the (new) resumes table is still empty.
+    conn.execute("DELETE FROM resumes")
+    conn.commit()
+
+    db_module._backfill_resumes_from_raw_json(conn)
+
+    row = conn.execute("SELECT * FROM resumes WHERE ride_id = 'r1'").fetchone()
+    assert row is not None
+    assert row["estimated_time"] == "2024-01-01T10:35:00Z"
+    assert bool(row["automatic"]) is True
+    assert row["lat"] == 1.0 and row["lon"] == 2.0
+
+
+def test_backfill_resumes_is_a_noop_once_table_has_rows(conn):
+    ride1 = make_ride("r1", "2024-01-01T10:00:00Z", resumes=[{"estimatedTime": "2024-01-01T10:35:00Z", "automatic": True}])
+    ride2 = make_ride("r2", "2024-01-02T10:00:00Z", resumes=[{"estimatedTime": "2024-01-02T10:35:00Z", "automatic": True}])
+    db_module.upsert_ride(conn, "u1", ride1)
+    db_module.upsert_ride(conn, "u1", ride2)
+    conn.commit()
+
+    # Simulate r2's resume row having been lost some other way — the table
+    # is non-empty (r1's row survives), so the backfill's guard must skip
+    # entirely rather than selectively restoring r2's, even though r2's
+    # resume is still sitting right there in raw_json.
+    conn.execute("DELETE FROM resumes WHERE ride_id = 'r2'")
+    conn.commit()
+
+    db_module._backfill_resumes_from_raw_json(conn)
+
+    assert conn.execute("SELECT COUNT(*) AS n FROM resumes WHERE ride_id = 'r2'").fetchone()["n"] == 0
+
+
 # --- claim_orphaned_data ----------------------------------------------------
 
 
