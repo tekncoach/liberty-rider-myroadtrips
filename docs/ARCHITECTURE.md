@@ -79,19 +79,26 @@ the user as an error during normal use.
 
 - **`rides`** — one row per Liberty Rider "stopped ride", upserted verbatim
   from the API (`raw_json` keeps the full original payload), scoped to
-  `user_id`. Two more columns encode *our* organization on top of that raw
-  data:
+  `user_id`. A few more columns encode *our* organization on top of that
+  raw data, all preserved across a re-sync (see `upsert_ride`'s pre-SELECT
+  and its deliberately-excluded columns in the `ON CONFLICT` clause):
   - `roadtrip_id` — nullable FK to `roadtrips`. Set by the user grouping
     rides into a named, multi-day trip.
   - `merged_into` — nullable, self-referential FK to `rides.id`. See
     **Merge** below.
+  - `notes` — a free-text note the user can attach to a ride
+    (`PATCH /api/rides/{id}/notes`), shown inline and in search.
 - **`roadtrips`** — `id`, `user_id`, `name`. All aggregation (distance,
   duration, day span, day-by-day breakdown) is computed on read from its
   member rides, never stored.
-- **`pauses`** — one row per recorded pause on a ride (`ride_id`,
-  `estimated_time`, `automatic`, `lat`/`lon`). Replaced wholesale on every
-  sync of that ride (delete + reinsert), since Liberty Rider doesn't give
-  pauses stable ids.
+- **`pauses`** / **`resumes`** — one row per recorded pause/resume on a
+  ride (`ride_id`, `estimated_time`, `automatic`, `lat`/`lon`). Replaced
+  wholesale on every sync of that ride (delete + reinsert), since Liberty
+  Rider doesn't give them stable ids. The GraphQL query has always
+  requested `resumes`, but the app didn't store or use it until the ride
+  timeline feature (below) — `db._backfill_resumes_from_raw_json` recovers
+  it for already-synced rides from `raw_json` (no resync needed) the first
+  time `init_db()` runs against an existing database.
 - **`tags`** / **`ride_tags`** — a plain many-to-many, scoped by
   `tags.user_id` with `UNIQUE(user_id, name)` (two different accounts can
   each have their own "Paris" tag; the same account can't have it twice).
@@ -102,6 +109,8 @@ the user as an error during normal use.
 - **`sync_state`** — `(user_id, key)` → `value`; currently one key per user
   (`last_sync_max_start_time`) tracking the newest `startTime` synced so
   far, for incremental syncs.
+- **`elevation_cache`** / **`mountain_pass_cache`** / **`ride_cols`** — see
+  **Elevation profile & named cols** below.
 
 ### Migrations
 
@@ -176,6 +185,94 @@ current session's `user_id` — merging, tagging, or grouping someone else's
 ride isn't just rejected by these rules, the row simply doesn't resolve at
 all for a different account (404, not 403 — see `_get_owned_ride` /
 `_get_owned_roadtrip` / `_get_owned_tag`).
+
+## Ride timeline (trajet/pause chronology)
+
+`GET /api/rides/{id}` includes `timeline`: a list of `{type: "ride"|"pause",
+start, end}` segments built from Liberty Rider's `pauses`/`resumes` events,
+rendered as a single horizontal bar (`renderRideTimeline` in `static/app.js`)
+sized by each segment's *real duration* — deliberately not a bar-per-pause
+histogram, since a histogram indexed by pause number can't show that a long
+pause was followed by a short leg.
+
+- **`_ride_own_timeline(start_time, duration, pauses, resumes)`** — a single
+  raw ride's own state machine. State always starts `"ride"` at the ride's
+  own `start_time` (matches how Liberty Rider itself computes that ride's
+  `duration_without_pauses`/`total_pauses_duration`). `pauses` and `resumes`
+  are **not positionally paired** — seen on real data, a ride can carry a
+  `resume` event *before* its "matching" `pause` (likely closing a brief
+  pause-at-start Liberty Rider never logs as a pause). So instead of zipping
+  the two arrays by index, every event is merge-sorted chronologically and
+  walked as a state machine: a `pause` while already paused, or a `resume`
+  while already riding, is a no-op rather than a fabricated segment. A
+  trailing unresolved pause (no `resume` before the ride ends) is capped at
+  that ride's own end, not left open.
+- **`_merged_ride_timeline(conn, row)`** — concatenates each merge-group
+  member's own independently-built timeline across merge boundaries. An
+  inter-member tracking gap is counted as `"pause"` — consistent with how
+  the merged ride's `total_pauses_duration` is itself computed (merged span
+  minus each member's own riding time, so the gap already counts as pause
+  time there too) — and contiguous same-type segments across the boundary
+  merge into one. Building each member's timeline **independently** (rather
+  than merge-sorting every event across the whole group at once) matters: on
+  real data, a member's own dangling pause otherwise gets "closed" by an
+  unrelated `resume` belonging to the *next* member's later pause, ballooning
+  one segment to cover everything in between.
+
+## Elevation profile & named cols
+
+Liberty Rider has no altitude-per-point data anywhere (checked via GraphQL
+introspection and its own GPX export — only a single `maximumAltitude`
+scalar per ride exists). Elevation is instead **estimated** via the free
+[open-elevation](https://www.open-elevation.com/) API and aggressively
+cached (`elevation.py`, `elevation_cache` table — every coordinate is
+looked up at most once, ever).
+
+- **`GET /api/rides/{id}/elevation`** resamples the ride's decoded polyline
+  to ~60 points evenly spaced *by distance*, not by raw GPS index
+  (`_resample_indices` — points cluster tighter at low speed or during a
+  pause, so index-based sampling would over-represent those stretches).
+  Returns the profile, each pause projected onto its nearest track point,
+  and D+/D- summed over that resampled profile — an estimate of an
+  estimate (open-elevation isn't a measurement either), fine for a fun
+  stat, not a precise instrument reading.
+- **`GET /api/rides/{id}/cols`** is a **separate endpoint**, deliberately:
+  naming a col costs one Overpass network call per candidate peak and can
+  be slow, and the elevation chart itself must never wait on it — the
+  frontend fetches `/elevation` first (chart renders instantly) and
+  `/cols` afterward, appending markers once (if) it resolves.
+  - **`_detect_peaks(profile, min_prominence_m=100)`** — local elevation
+    maxima with topographic-prominence filtering computed over the ride's
+    own profile. A col is defined by *shape* — it climbs, then descends —
+    not by absolute altitude, so a 300m pass and a 2000m pass are detected
+    the same way.
+  - **`_refine_peak_point`** — the coarse 60-point profile isn't precise
+    enough to disambiguate a col from a nearby named summit a few hundred
+    meters away (real example: Col des Tempêtes vs. Mont Ventoux, ~500m
+    apart, both within Overpass's search radius of either). Refines the
+    peak's location by densely sampling raw GPS points around it, plus any
+    pause recorded along that same stretch (a rider stopping at a summit
+    is often a very precise fix on exactly where the true high point was),
+    and keeps whichever candidate has the highest estimated elevation.
+  - **`mountain_pass.get_pass_name(conn, lat, lon, hint_elevation=...)`**
+    queries OpenStreetMap's Overpass API for both through-route cols
+    (`mountain_pass=yes`) and dead-end summits (`natural=peak` — e.g. Mont
+    Ventoux, which was never going to be tagged as a pass since the road
+    climbs it and comes back down the same side) within 1km. When several
+    candidates are found, picks by closest match between `hint_elevation`
+    and each candidate's OSM `ele` tag rather than by raw distance — a col
+    and a summit can sit closer to each other than to the query point. A
+    successful "nothing found nearby" is cached forever
+    (`mountain_pass_cache`); a **request failure is deliberately NOT
+    cached** — the public Overpass instance is occasionally rate-limited
+    or flaky, and caching that indistinguishably from a genuine "nothing
+    here" would poison the result forever over one transient hiccup.
+  - Found names are persisted to **`ride_cols`** (`ride_id`, `name`) so
+    they become searchable client-side (see `_attach_col_names_bulk`,
+    surfaced as `col_names` on `GET /api/rides`) — **progressively**, only
+    for a ride whose detail has actually been opened at least once, never
+    backfilled for the whole history at once (which would mean hundreds of
+    Overpass calls against a free, rate-limited public API in one go).
 
 ## Grouping heuristics
 

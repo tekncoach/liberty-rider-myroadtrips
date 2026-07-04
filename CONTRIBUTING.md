@@ -31,8 +31,14 @@ Copy `.env.example` to `.env` if you need to override `COOKIE_SECURE` or
 - `db.py` — SQLite schema + queries, plain `sqlite3`, no ORM.
 - `sync.py`, `liberty_client.py`, `firebase_refresh.py` — talking to the
   Liberty Rider GraphQL API and Firebase auth.
+- `elevation.py`, `mountain_pass.py` — the two external, free/keyless APIs
+  (open-elevation, OpenStreetMap Overpass) behind the elevation chart and
+  named cols/summits — see `docs/ARCHITECTURE.md`.
 - `static/` — the whole frontend: plain HTML/CSS/JS, no build step, no
-  framework.
+  framework. Ride search and chart rendering live here and currently have
+  no automated test coverage (no JS test framework in the repo) — verify
+  UI changes by hand (or a throwaway repro page fed real data) rather than
+  assuming a passing `make test` covers them.
 - `docs/ARCHITECTURE.md` and `docs/API.md` — how the pieces fit together
   and what the Liberty Rider GraphQL API looks like. Read these before
   touching sync/auth code — they document behavior that isn't obvious from
