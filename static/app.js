@@ -16,7 +16,12 @@ const state = {
   map: null,
   rideModalMap: null,
   rideModalId: null,
-  showAll: localStorage.getItem("showAll") === "1",
+  // Inverted from the old "showAll" (unchecked = only ungrouped/untagged):
+  // now that "Mes traces" has search, an old already-organized ride must
+  // still turn up by default — checking this narrows down to the "still
+  // needs sorting" pile instead.
+  hideOrganized: localStorage.getItem("hideOrganized") === "1",
+  rideSearch: "",
   collapsedYears: new Set(),
   collapsedTripYears: new Set(),
 };
@@ -171,14 +176,33 @@ function switchTab(tab) {
   renderList();
 }
 
-// --- show grouped/tagged toggle ---
-const showAllToggle = document.getElementById("showAllToggle");
-showAllToggle.checked = state.showAll;
-showAllToggle.addEventListener("change", (e) => {
-  state.showAll = e.target.checked;
-  localStorage.setItem("showAll", state.showAll ? "1" : "0");
+// --- hide grouped/tagged toggle ---
+const hideOrganizedToggle = document.getElementById("hideOrganizedToggle");
+hideOrganizedToggle.checked = state.hideOrganized;
+hideOrganizedToggle.addEventListener("change", (e) => {
+  state.hideOrganized = e.target.checked;
+  localStorage.setItem("hideOrganized", state.hideOrganized ? "1" : "0");
   renderList();
 });
+
+// --- ride search (title, note, discovered col names) ---
+const rideSearchInput = document.getElementById("rideSearchInput");
+rideSearchInput.addEventListener("input", (e) => {
+  state.rideSearch = normalizeSearchText(e.target.value);
+  renderList();
+});
+
+// Accent-insensitive so "bedoin" finds "Bédoin" — matters a lot for French
+// place names, which is most of what a ride title/col name is.
+function normalizeSearchText(s) {
+  return (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+
+function rideMatchesSearch(r, query) {
+  if (!query) return true;
+  const haystack = normalizeSearchText([r.name, r.notes, ...(r.col_names || [])].filter(Boolean).join(" "));
+  return haystack.includes(query);
+}
 
 async function refresh() {
   state.roadtrips = await api("/api/roadtrips");
@@ -201,13 +225,16 @@ function renderList() {
     const sortedTrips = [...state.roadtrips].sort((a, b) => (b.start_date || "").localeCompare(a.start_date || ""));
     renderYearMonthGroups(wrap, sortedTrips, (t) => t.start_date, renderTripRow, state.collapsedTripYears, toggleTripYear);
   } else if (state.tab === "ungrouped") {
-    const visible = state.showAll
-      ? state.ungrouped
-      : state.ungrouped.filter((r) => !r.roadtrip_id && !(r.tags && r.tags.length));
+    let visible = state.hideOrganized
+      ? state.ungrouped.filter((r) => !r.roadtrip_id && !(r.tags && r.tags.length))
+      : state.ungrouped;
+    visible = visible.filter((r) => rideMatchesSearch(r, state.rideSearch));
     if (!visible.length) {
-      wrap.innerHTML = state.showAll
-        ? '<div class="section">Aucun trajet.</div>'
-        : '<div class="section">Rien à regrouper — tout est déjà rangé ou taggué. Coche « Afficher les groupés/taggués » pour tout voir.</div>';
+      wrap.innerHTML = state.rideSearch
+        ? '<div class="section">Aucun trajet ne correspond à la recherche.</div>'
+        : state.hideOrganized
+        ? '<div class="section">Rien à regrouper — tout est déjà rangé ou taggué. Décoche « Masquer les groupés/taggués » pour tout voir.</div>'
+        : '<div class="section">Aucun trajet.</div>';
       updateSelectionBar();
       return;
     }
