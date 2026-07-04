@@ -444,17 +444,23 @@ async function openRideModal(id) {
   const endTime = new Date(new Date(ride.start_time).getTime() + (ride.duration || 0) * 1000);
   document.getElementById("rideModalSubtitle").textContent =
     `${fmtDay(ride.start_time)} · Départ ${fmtTime(ride.start_time)} → Arrivée ${fmtTime(endTime)}`;
+  // Grouped by proximity to the chart each set of numbers explains: time
+  // breakdown right above the trajet/pause timeline, distance/altitude
+  // right above the elevation profile.
   document.getElementById("rideModalStats").innerHTML = `
     <div class="stat"><div class="v">${fmtDuration(ride.duration)}</div><div class="l">Durée totale</div></div>
     <div class="stat"><div class="v">${fmtDuration(ride.duration_without_pauses)}</div><div class="l">À moto</div></div>
     <div class="stat"><div class="v">${fmtDuration(ride.total_pauses_duration)}</div><div class="l">En pause</div></div>
-    <div class="stat"><div class="v">${fmtKm(ride.distance)}</div><div class="l">Distance</div></div>
-    <div class="stat"><div class="v">${fmtAlt(ride.maximum_altitude)}</div><div class="l">Altitude max.</div></div>
     <div class="stat"><div class="v">${ride.pause_count ?? 0}</div><div class="l">Pauses</div></div>
+  `;
+  document.getElementById("rideModalStatsTrack").innerHTML = `
+    <div class="stat"><div class="v">${fmtKm(ride.distance)}</div><div class="l">Distance</div></div>
     <div class="stat"><div class="v">${fmtAvgSpeed(ride.distance, ride.duration_without_pauses)}</div><div class="l">Vitesse moy. (roulant)</div></div>
+    <div class="stat"><div class="v">${fmtAlt(ride.maximum_altitude)}</div><div class="l">Altitude max.</div></div>
     <div class="stat"><div class="v" id="rideModalElevGain">…</div><div class="l">Dénivelé (D+ / D-)</div></div>
   `;
   document.getElementById("rideModalGpx").href = `/api/rides/${ride.id}/export.gpx`;
+  setupRideModalDetailsToggle();
   renderRideTimeline(ride);
   renderElevationChart(ride.id);
   renderRideModalTags(ride.tags || []);
@@ -675,6 +681,27 @@ function setupDaylistToggle() {
     header.title = collapsed ? "Agrandir" : "Réduire";
     setTimeout(() => state.map && state.map.invalidateSize(), 0);
   });
+}
+
+// Same collapse pattern as setupDaylistToggle: hides the stats/charts so
+// #rideModalMap (flex:1) can grow into the freed space. Open by default on
+// every ride opened, not persisted.
+function setupRideModalDetailsToggle() {
+  const header = document.getElementById("rideModalDetailsHeader");
+  const btn = document.getElementById("rideModalDetailsToggle");
+  const body = document.getElementById("rideModalDetailsBody");
+  // Unlike #daylistHeader (rebuilt via innerHTML on every showTripDetail
+  // call, so old listeners are discarded with the old DOM), this header is
+  // a static element in index.html reused across every openRideModal call
+  // — addEventListener here would stack a new listener each time a ride is
+  // opened, so a single click ends up toggling multiple times at once.
+  // .onclick assignment replaces any previous handler instead of adding on.
+  header.onclick = () => {
+    const collapsed = body.classList.toggle("collapsed");
+    btn.textContent = collapsed ? "▸" : "▾";
+    header.title = collapsed ? "Agrandir" : "Réduire";
+    setTimeout(() => state.rideModalMap && state.rideModalMap.invalidateSize(), 0);
+  };
 }
 
 function renderDayList(trip) {
@@ -1016,7 +1043,7 @@ async function renderElevationChart(rideId) {
 
   el.innerHTML = `
     <div class="l">altitude (estimée)</div>
-    <svg class="elevation-chart" viewBox="0 0 ${VIEW_W} ${VIEW_H}" preserveAspectRatio="none">
+    <svg class="elevation-chart" viewBox="0 0 ${VIEW_W} ${VIEW_H}" preserveAspectRatio="none" overflow="visible">
       <polygon class="elevation-fill" points="${fillPoints.join(" ")}"></polygon>
       <polyline class="elevation-line" points="${linePoints.join(" ")}"></polyline>
       ${hitCircles}
@@ -1029,6 +1056,32 @@ async function renderElevationChart(rideId) {
     <div class="mini-chart-tooltip"></div>
   `;
   attachMiniChartTooltip(el, ".elevation-hit, .elevation-pause-dot");
+
+  // Cols are fetched separately (see /api/rides/{id}/cols): a network call
+  // per candidate peak against OpenStreetMap's Overpass, which can be slow
+  // — the chart above must never wait on this, so it's appended once (if)
+  // this resolves, after the chart is already visible.
+  try {
+    const colsData = await api(`/api/rides/${rideId}/cols`);
+    if (state.rideModalId !== rideId) return;
+    const cols = (colsData.cols || []).filter((c) => c.elevation != null);
+    if (!cols.length) return;
+    const svg = el.querySelector(".elevation-chart");
+    if (!svg) return;
+    // A col is identified by shape (climbs then descends), not altitude —
+    // see _detect_peaks in app.py — and named via OpenStreetMap; only
+    // named ones are marked here, an unnamed peak would just be noise.
+    const colMarkers = cols.map((c) => {
+      const cx = x(c.distance_km);
+      const cy = y(c.elevation);
+      return `<polygon class="elevation-col-marker" points="${cx},${cy - 9} ${cx - 4},${cy - 2} ${cx + 4},${cy - 2}"
+         data-tooltip="${c.name} — ${Math.round(c.elevation)} m — ${c.distance_km.toFixed(1)} km"></polygon>`;
+    }).join("");
+    svg.insertAdjacentHTML("beforeend", colMarkers);
+    attachMiniChartTooltip(el, ".elevation-col-marker");
+  } catch (e) {
+    // silent — fun/optional detail
+  }
 }
 
 (async () => {
