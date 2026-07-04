@@ -36,18 +36,53 @@
   h1 { font-size: 14.5px; font-weight: 600; margin: 16px 16px 3px; }
   .sub { font-size: 11px; color: var(--muted); margin: 0 16px 10px; line-height: 1.4; }
 
-  #syncbar { padding: 10px 16px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-  #syncbar input[type=password], #syncbar input[type=text] {
-    width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
-    background: var(--bg); color: var(--text); font-size: 12px; margin-bottom: 6px;
+  #authScreen {
+    height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg);
   }
-  #syncbar .row { display: flex; gap: 6px; margin-bottom: 6px; }
-  #authStatus { font-size: 11.5px; color: var(--muted); margin-bottom: 2px; }
-  #authStatus.connected { color: #2ba85a; }
-  #profileInfo { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
-  #profileInfo:empty { display: none; }
-  #tokenDetails { margin-bottom: 6px; }
-  #tokenDetails summary { font-size: 11px; color: var(--muted); cursor: pointer; margin-bottom: 6px; }
+  #authCard {
+    width: min(420px, 90vw); background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 28px 28px 22px; box-shadow: var(--shadow);
+  }
+  #authCard h1 { margin: 0 0 10px; font-size: 20px; }
+  #authCard .sub { margin: 0 0 16px; font-size: 12.5px; line-height: 1.5; }
+  #loginForm { display: flex; flex-direction: column; gap: 8px; }
+  #loginForm input {
+    padding: 9px 11px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 13px;
+  }
+  #loginForm button { padding: 9px; font-size: 13px; margin-top: 4px; }
+  #loginError { color: #d1453b; font-size: 12px; margin-top: 8px; min-height: 14px; }
+  #authFooter { margin: 16px 0 0 !important; opacity: 0.75; }
+  #authDisclaimer { margin: 10px 0 0 !important; opacity: 0.55; font-size: 10.5px !important; }
+  #authDisclaimer a { color: inherit; }
+
+  #userbar { padding: 8px 12px; border-top: 1px solid var(--border); position: relative; }
+  #userRow { display: flex; align-items: center; gap: 8px; }
+  #userAvatar {
+    width: 28px; height: 28px; border-radius: 50%; flex: none; background: var(--accent); color: white;
+    display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+  }
+  #userMeta { flex: 1; min-width: 0; line-height: 1.25; }
+  #userName { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #userSub { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #userRow button { flex: none; padding: 6px 9px; }
+  #syncBtn { font-size: 15px; line-height: 1; padding: 5px 10px; }
+  #userMenuBtn { font-size: 13px; padding: 5px 8px; }
+  #userMenu {
+    display: none; position: absolute; bottom: 100%; right: 12px; margin-bottom: 6px; z-index: 5;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow);
+    min-width: 230px; overflow: hidden;
+  }
+  #userMenu.open { display: block; }
+  #userMenu button {
+    display: block; width: 100%; text-align: left; border: none; border-radius: 0; background: none;
+    padding: 9px 12px; border-bottom: 1px solid var(--border);
+  }
+  #userMenu button:last-child { border-bottom: none; }
+  #userMenu button:hover { background: var(--row-hover); }
+  #userMenu .menu-title { display: block; font-weight: 600; }
+  #userMenu .menu-sub { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: normal; line-height: 1.35; }
+  #syncstatus:not(:empty) { margin-top: 6px; }
   button {
     font-family: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--bg);
     color: var(--text); border-radius: 6px; padding: 6px 10px; cursor: pointer;
@@ -76,6 +111,7 @@
   }
   .year-header:hover { background: var(--row-hover); }
   .year-header .chevron { display: inline-block; width: 12px; color: var(--muted); font-size: 11px; }
+  .year-header .count, .month-header .count { font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
   .month-header {
     padding: 6px 16px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
     color: var(--muted); background: var(--bg);
@@ -182,14 +218,43 @@
 </style>
 </head>
 <body>
-<div id="app">
+<div id="authScreen">
+  <div id="authCard">
+    <h1>🏍️ Mes trajets</h1>
+    <p class="sub">
+      Un outil personnel pour organiser l'historique de tes trajets GPS
+      Liberty Rider : regroupe-les en roadtrips, tague-les par zone, recolle
+      les traces coupées en deux par un bug de tracking, et visualise tout
+      sur une carte. Liberty Rider ne montre que les roadbooks que tu as
+      publiés — pas ton historique brut ; c'est ce que cet outil récupère
+      pour toi.
+    </p>
+    <form id="loginForm">
+      <input id="loginEmail" type="email" placeholder="Email Liberty Rider" autocomplete="username" required />
+      <input id="loginPassword" type="password" placeholder="Mot de passe" autocomplete="current-password" required />
+      <button id="loginBtn" class="primary" type="submit">Se connecter</button>
+    </form>
+    <div id="loginError"></div>
+    <p class="sub" id="authFooter">
+      Connexion directe avec ton compte Liberty Rider (email + mot de passe).
+      Rien d'autre n'est demandé.
+    </p>
+    <p class="sub" id="authDisclaimer">
+      Projet indépendant et non officiel, sans lien avec Liberty Rider —
+      pas affilié, pas approuvé, pas sponsorisé. « Liberty Rider » et les
+      marques associées appartiennent à leurs propriétaires respectifs.
+      Site officiel : <a href="https://liberty-rider.com/" target="_blank" rel="noopener">liberty-rider.com</a>.
+    </p>
+  </div>
+</div>
+<div id="app" style="display:none">
   <div id="sidebar">
     <h1>🏍️ Mes trajets</h1>
     <p class="sub">Trajets GPS personnels Liberty Rider, à regrouper en roadtrips.</p>
     <div id="tabs">
-      <button id="tabTrips" class="active">Roadtrips</button>
-      <button id="tabTags">Tags</button>
-      <button id="tabUngrouped">Mes traces</button>
+      <button id="tabTrips" class="active">🧳 Roadtrips</button>
+      <button id="tabTags">🏷️ Tags</button>
+      <button id="tabUngrouped">📍 Mes traces</button>
     </div>
     <div id="listtoolbar">
       <label><input type="checkbox" id="tilesToggle" checked /> Afficher les aperçus de tracé</label>
@@ -207,20 +272,22 @@
         <button id="mergeSelectionBtn" disabled title="Fusionne 2+ trajets sélectionnés en un seul (même trace coupée en deux)">🔗 Fusionner la sélection</button>
       </div>
     </div>
-    <div id="syncbar">
-      <div id="authStatus"></div>
-      <div id="profileInfo"></div>
-      <div class="row" id="loginRow">
-        <button id="loginBtn">🔑 Se connecter</button>
-        <button id="logoutBtn" style="display:none" title="Oublie le token enregistré">Déconnexion</button>
-      </div>
-      <details id="tokenDetails">
-        <summary>Ou coller un token manuellement</summary>
-        <input id="token" type="password" placeholder="Token Bearer Liberty Rider…" />
-      </details>
-      <div class="row">
-        <button id="syncBtn" class="primary">Synchroniser</button>
-        <button id="syncFullBtn" title="Re-télécharge tout l'historique">Full sync</button>
+    <div id="userbar">
+      <div id="userRow">
+        <div id="userAvatar">?</div>
+        <div id="userMeta">
+          <div id="userName"></div>
+          <div id="userSub"></div>
+        </div>
+        <button id="syncBtn" class="primary" title="Synchroniser : récupère les trajets les plus récents">⟳</button>
+        <button id="userMenuBtn" title="Plus d'options">⋯</button>
+        <div id="userMenu">
+          <button id="syncFullBtn">
+            <span class="menu-title">Resynchroniser tout l'historique</span>
+            <span class="menu-sub">Re-télécharge tous tes trajets depuis le début, pas juste les nouveaux — utile si des données semblent manquantes ou incorrectes</span>
+          </button>
+          <button id="logoutBtn">Déconnexion</button>
+        </div>
       </div>
       <div id="syncstatus"></div>
     </div>

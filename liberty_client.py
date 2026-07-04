@@ -41,10 +41,20 @@ query MyRides($first: Int, $after: DateTime, $before: DateTime, $onlyFavorites: 
 }
 """.strip()
 
-# Only fields confirmed to exist via introspection so far — the User type
-# likely has more (name, email, vehicles, ...), worth expanding once someone
-# checks with `{ __type(name: "User") { fields { name } } }`.
+# `firstName` is confirmed to exist on the roadbook-author variant of this
+# type (see docs/graphql-api.md) — assumed to exist on `currentUser` too.
+# get_current_user() falls back to the minimal query below if not.
 CURRENT_USER_QUERY = """
+query CurrentUser {
+  currentUser {
+    id
+    firstName
+    manualRideCount
+  }
+}
+""".strip()
+
+CURRENT_USER_QUERY_MINIMAL = """
 query CurrentUser {
   currentUser {
     id
@@ -100,13 +110,14 @@ class LibertyRiderClient:
         return data["data"]["currentUser"]
 
     def get_current_user(self) -> dict:
-        payload = {"operationName": "CurrentUser", "query": CURRENT_USER_QUERY}
-        resp = self.session.post(API_URL, json=payload, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("data") is None:
-            raise RuntimeError(f"GraphQL error: {data.get('errors')}")
-        return data["data"]["currentUser"]
+        for query in (CURRENT_USER_QUERY, CURRENT_USER_QUERY_MINIMAL):
+            payload = {"operationName": "CurrentUser", "query": query}
+            resp = self.session.post(API_URL, json=payload, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("data") is not None:
+                return data["data"]["currentUser"]
+        raise RuntimeError(f"GraphQL error: {data.get('errors')}")
 
     def download_gpx(self, gpx_export_url: str) -> bytes:
         resp = self.session.get(gpx_export_url, timeout=30)

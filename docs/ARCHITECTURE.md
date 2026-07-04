@@ -8,40 +8,123 @@ liberty_client.py  →  sync.py  →  db.py (SQLite)  →  app.py (FastAPI)  →
 ```
 
 - **`liberty_client.py`** — minimal GraphQL client for Liberty Rider's
-  (undocumented) API. One query (`MyRides`) plus a GPX-download helper.
+  (undocumented) API. Queries for the current user (`CurrentUser`) and their
+  ride history (`MyRides`), plus a GPX-download helper.
+- **`firebase_refresh.py`** — direct Firebase Auth REST calls:
+  `sign_in_with_password` (the only login path in the app) and
+  `refresh_id_token` (used server-side to silently renew an expired session's
+  Liberty Rider token without asking the user to log in again).
 - **`sync.py`** — walks the API's pagination to pull all-or-new rides and
-  upserts them into SQLite.
+  upserts them into SQLite, scoped to one user.
 - **`db.py`** — schema + connection helper + `upsert_ride`. Raw `sqlite3`,
   no ORM.
-- **`app.py`** — FastAPI app exposing the HTTP API (see `API.md`) and serving
-  `static/`.
+- **`app.py`** — FastAPI app: auth (login/logout/session), the HTTP API (see
+  `API.md`), and serving `static/`.
 - **`static/index.html` + `static/app.js`** — single-page app, no build step.
   A single global `state` object is the source of truth; each tab
   (Roadtrips / Tags / Mes traces) has its own render function that rebuilds
   its DOM subtree from `state` on every change. Leaflet renders the map.
+  `#authScreen` (login form) and `#app` (the real UI) are mutually
+  exclusive — the app never fetches or renders any ride data until
+  `GET /api/auth/status` confirms a session exists.
+
+## Multi-tenancy and auth
+
+The app is multi-tenant: every account is scoped to its own Liberty Rider
+user id, and every row of ride/roadtrip/tag data belongs to exactly one
+account. There is exactly one way to authenticate — email + password,
+exchanged directly with Firebase (`POST /api/auth/login`) — no token pasting,
+no browser automation, no other login path.
+
+- **`users`** — one row per account, keyed by `id` = the user's own Liberty
+  Rider id (`currentUser.id` from the GraphQL API — *not* a separate
+  internally-minted id, so it's directly traceable back to the same account
+  on Liberty Rider itself). Also holds `first_name` (fetched at login),
+  `email` (as typed at login), and the current `bearer_token` /
+  `refresh_token` / `firebase_api_key`, used to make Liberty Rider API calls
+  on that user's behalf and to silently refresh the token when it expires.
+- **`sessions`** — `id` (an opaque, random session token — see
+  `db.create_session`) → `user_id`. The session id is set as an httpOnly
+  cookie (`SESSION_COOKIE` in app.py); every protected endpoint depends on
+  `get_session_user`, which looks up this table and 401s if the cookie is
+  missing or the session doesn't exist.
+- Every other table's rows are scoped by a `user_id` column (`rides`,
+  `roadtrips`, `tags`) or transitively through one (`pauses` via `ride_id`,
+  `ride_tags` via both, `sync_state` via `user_id` directly). Every query in
+  `app.py` filters by the current session's `user_id` — there is no
+  endpoint that returns unscoped data.
+
+**Login flow** (`POST /api/auth/login` in app.py): exchange email/password
+with Firebase → fetch `currentUser` from Liberty Rider's API using the
+resulting token → `db.upsert_user` (creates the account on first login, by
+Liberty Rider id) → `db.save_user_tokens` → `db.claim_orphaned_data` (see
+below) → `db.create_session` → set the session cookie.
+
+**`claim_orphaned_data(conn, user_id)`**: a one-time migration helper, not
+a normal-operation code path. If this is the very first account ever
+created on this database (i.e. exactly one row in `users`), it attributes
+any pre-existing `user_id IS NULL` rows to that account. This exists purely
+to carry forward data from this app's pre-multi-tenant single-user version;
+it's a no-op (and permanently inert) as soon as a second account exists, so
+it can never hand one user's data to another.
+
+**Token refresh**: `_live_client_for(conn, user)` in app.py makes one cheap
+API call with the user's stored `bearer_token`; on a 401/403 it exchanges
+the stored `refresh_token` via `firebase_refresh.refresh_id_token` and
+persists the new tokens, transparently, before retrying. Used by
+`/api/sync` and `/api/auth/profile` so an expired token never surfaces to
+the user as an error during normal use.
 
 ## Data model (`db.py`)
 
 - **`rides`** — one row per Liberty Rider "stopped ride", upserted verbatim
-  from the API (`raw_json` keeps the full original payload). Two columns
-  encode *our* organization on top of that raw data:
+  from the API (`raw_json` keeps the full original payload), scoped to
+  `user_id`. Two more columns encode *our* organization on top of that raw
+  data:
   - `roadtrip_id` — nullable FK to `roadtrips`. Set by the user grouping
     rides into a named, multi-day trip.
   - `merged_into` — nullable, self-referential FK to `rides.id`. See
     **Merge** below.
-- **`roadtrips`** — just `id` + `name`. All aggregation (distance, duration,
-  day span, day-by-day breakdown) is computed on read from its member rides,
-  never stored.
+- **`roadtrips`** — `id`, `user_id`, `name`. All aggregation (distance,
+  duration, day span, day-by-day breakdown) is computed on read from its
+  member rides, never stored.
 - **`pauses`** — one row per recorded pause on a ride (`ride_id`,
   `estimated_time`, `automatic`, `lat`/`lon`). Replaced wholesale on every
   sync of that ride (delete + reinsert), since Liberty Rider doesn't give
   pauses stable ids.
-- **`tags`** / **`ride_tags`** — a plain many-to-many. Tags are get-or-create
-  by name (`api_attach_tag`) and carry no date semantics — a tag can span
-  rides from any year, which is the point (e.g. a "Paris" tag collecting
-  every ride that passed through the city, 2022 and 2026 alike).
-- **`sync_state`** — a single key (`last_sync_max_start_time`) tracking the
-  newest `startTime` synced so far, for incremental syncs.
+- **`tags`** / **`ride_tags`** — a plain many-to-many, scoped by
+  `tags.user_id` with `UNIQUE(user_id, name)` (two different accounts can
+  each have their own "Paris" tag; the same account can't have it twice).
+  Tags are get-or-create by name (`api_attach_tag`) and carry no date
+  semantics — a tag can span rides from any year, which is the point (e.g. a
+  "Paris" tag collecting every ride that passed through the city, 2022 and
+  2026 alike).
+- **`sync_state`** — `(user_id, key)` → `value`; currently one key per user
+  (`last_sync_max_start_time`) tracking the newest `startTime` synced so
+  far, for incremental syncs.
+
+### Migrations
+
+`db.init_db()` runs a handful of one-shot migration functions
+(`_migrate_users_table`, `_migrate_tags_table`, `_migrate_sync_state_table`)
+that rebuild older table shapes into the current multi-tenant one —
+relevant if you're running this against a database created before
+multi-tenancy was added; a no-op otherwise. Each rebuild follows the same
+pattern: rename the old table, create the new one, copy rows across, drop
+the old one, `commit()` immediately (rather than waiting for one final
+commit at the end of `init_db()` — an earlier version did that and a later
+unrelated failure in the same call left a half-renamed table stranded).
+Each function also self-heals if it's re-run after being interrupted before
+its own `DROP TABLE ..._old` (checks for a leftover `..._old` table first
+and recovers it instead of silently ignoring it).
+
+Foreign keys are enforced with `PRAGMA foreign_keys = OFF` — deliberately.
+SQLite's `ALTER TABLE ... RENAME TO` automatically rewrites *other* tables'
+stored `REFERENCES` clauses to point at the renamed-away name (e.g. renaming
+`users` to `users_old` mid-migration silently changed `rides`' stored schema
+to say `REFERENCES users_old(id)`). Nothing here relies on FK cascades, so
+enforcement is off to avoid that failure mode entirely rather than working
+around it table-by-table.
 
 ## Merge: the non-destructive part
 
@@ -87,7 +170,12 @@ was ever changed.
 another merge (in either direction), tagged rides (ambiguous which ride's
 tags should "win"), and rides belonging to two *different* roadtrips. Rides
 belonging to the *same* roadtrip (or where only one side has one) are
-allowed — the representative inherits that common roadtrip.
+allowed — the representative inherits that common roadtrip. All of this
+(and every other ride/roadtrip/tag lookup in app.py) is scoped to the
+current session's `user_id` — merging, tagging, or grouping someone else's
+ride isn't just rejected by these rules, the row simply doesn't resolve at
+all for a different account (404, not 403 — see `_get_owned_ride` /
+`_get_owned_roadtrip` / `_get_owned_tag`).
 
 ## Grouping heuristics
 

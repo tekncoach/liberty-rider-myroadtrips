@@ -1,19 +1,53 @@
 # API reference
 
-All endpoints are served by `app.py` under `/api`. Bodies are JSON; nothing
-requires authentication (this app is meant to run locally, for one user, as
-a private server — see the security note in the README).
+All endpoints are served by `app.py` under `/api`. Bodies are JSON.
+Every endpoint below except `## Auth` requires a valid session — an httpOnly
+`session_id` cookie set by `POST /api/auth/login` — and returns **401** if
+it's missing or expired. Every result is scoped to that session's account;
+there is no endpoint that returns another user's data (ride/roadtrip/tag ids
+belonging to someone else resolve as **404**, not 403 — see
+`docs/ARCHITECTURE.md`).
+
+## Auth
+
+### `POST /api/auth/login`
+Body: `{ "email": "...", "password": "..." }`. The only way to authenticate.
+Exchanges the password with Firebase, fetches the Liberty Rider account
+(`currentUser.id`/`firstName`), creates the account on first login, sets the
+session cookie. Returns `{ "ok": true, "first_name": "..." }`. **401** with
+Firebase's own error message (e.g. `INVALID_PASSWORD`) on bad credentials.
+**500** if the server has no `LIBERTY_RIDER_FIREBASE_API_KEY` configured.
+
+### `POST /api/auth/logout`
+Deletes the current session (server-side) and clears the cookie. Always
+`{ "ok": true }`, even if there was no session.
+
+### `GET /api/auth/status`
+No session required (never 401s). Returns `{ "logged_in": false }` or
+`{ "logged_in": true, "first_name": "..." }`. Used by the frontend on load
+to decide whether to show the login screen or the app.
+
+### `GET /api/auth/profile`
+Live-fetches `first_name` and `manual_ride_count` from Liberty Rider itself
+(refreshing the stored token first if needed — see `_live_client_for` in
+`docs/ARCHITECTURE.md`). Note: `manual_ride_count` (Liberty Rider's own
+`currentUser.manualRideCount` field) doesn't necessarily match this app's
+own `total_rides` from `/api/sync` — its exact definition on Liberty Rider's
+side isn't confirmed, only its name.
 
 ## Sync
 
 ### `POST /api/sync`
-Pulls rides from the Liberty Rider API into the local database.
-
-Body: `{ "token": "<Liberty Rider Bearer token>", "full": false }`
+Pulls rides from the Liberty Rider API into the local database, for the
+logged-in account. Body: `{ "full": false }`. The Liberty Rider token itself
+is never passed by the client — it's resolved (and silently refreshed if
+expired) server-side from the session's stored credentials.
 
 `full: true` re-walks the entire ride history instead of just what's new
 since the last sync (see `docs/ARCHITECTURE.md` for the pagination
 semantics). Returns `{ "fetched": int, "upserted": int, "total_rides": int }`.
+**401** if the stored token is invalid and couldn't be refreshed (log in
+again); **502** on any other Liberty Rider API error.
 
 ## Rides
 
