@@ -578,6 +578,7 @@ async function showTripDetail(id) {
       <div class="stat"><div class="v">${fmtKm(trip.total_distance)}</div><div class="l">distance</div></div>
       <div class="stat"><div class="v">${fmtDuration(trip.total_duration)}</div><div class="l">durée totale</div></div>
       <div class="stat"><div class="v">${trip.total_pause_count}</div><div class="l">pauses</div></div>
+      <div id="kmChart"></div>
       <label id="pausesToggleLabel"><input type="checkbox" id="pausesToggle" /> Afficher les pauses</label>
     </div>
     <div id="mapview"></div>
@@ -604,6 +605,7 @@ async function showTripDetail(id) {
     await refresh();
   });
   renderDayList(trip);
+  renderKmChart(trip, true);
   renderMap(trip);
 }
 
@@ -626,6 +628,7 @@ async function showTagDetail(id) {
       <label id="pausesToggleLabel"><input type="checkbox" id="pausesToggle" /> Afficher les pauses</label>
     </div>
     <div id="mapview"></div>
+    <div id="kmChart"></div>
     <div id="daylist"></div>
   `;
 
@@ -650,6 +653,7 @@ async function showTagDetail(id) {
   });
 
   renderDayList(tag);
+  renderKmChart(tag, false);
   renderMap(tag);
 }
 
@@ -789,6 +793,11 @@ function focusDay(index) {
   document.querySelectorAll("#daylist .day-row").forEach((row) => {
     row.classList.toggle("active", !reset && Number(row.dataset.dayIndex) === index);
   });
+  document.querySelectorAll("#kmChart .km-bar").forEach((bar) => {
+    const i = Number(bar.dataset.dayIndex);
+    bar.classList.toggle("active", !reset && i === index);
+    bar.classList.toggle("dimmed", !reset && i !== index);
+  });
 
   if (!reset && state.dayBounds[index] && state.dayBounds[index].length) {
     state.map.fitBounds(state.dayBounds[index], { padding: [30, 30] });
@@ -796,6 +805,93 @@ function focusDay(index) {
     const allBounds = state.dayBounds.flat();
     if (allBounds.length) state.map.fitBounds(allBounds, { padding: [20, 20] });
   }
+}
+
+// Adds a day, in ISO YYYY-MM-DD form, without any local-timezone drift
+// (Date-only strings parse as UTC midnight; walking with setDate() would
+// use local-time semantics and can land on the wrong day near a DST/UTC
+// offset boundary).
+function addDaysISO(iso, n) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+// Fills every calendar day between the first and last entry with a
+// zero-distance placeholder, so a rest day in the middle of a roadtrip
+// shows up as a visible gap instead of silently compressing the timeline.
+function fillDayGaps(days) {
+  if (!days.length) return days;
+  const byDate = new Map(days.map((d) => [d.date, d]));
+  const filled = [];
+  for (let iso = days[0].date; iso <= days[days.length - 1].date; iso = addDaysISO(iso, 1)) {
+    filled.push(byDate.get(iso) || { date: iso, total_distance: 0, ride_ids: [] });
+  }
+  return filled;
+}
+
+// Must match .km-chart-bars's CSS height. KM_BAR_MIN_PX must stay clearly
+// above .km-bar-empty's fixed 3px so a short-but-real ride never blurs
+// together with a genuine rest day next to it.
+const KM_CHART_HEIGHT = 34;
+const KM_BAR_MIN_PX = 8;
+
+// Single-hue magnitude chart (km/day) — days are a comparison of one
+// measure, not distinct series, so all bars share the accent color; the
+// currently map-focused day (if any) is emphasized, the rest dimmed, same
+// as the day's polyline on the map above. `fillGaps` is true for a roadtrip
+// (a real continuous date span — a rest day should show as an empty slot)
+// and false for a tag (which has no span semantics — filling gaps between
+// e.g. a 2022 and a 2026 ride would mean thousands of meaningless bars).
+function renderKmChart(trip, fillGaps) {
+  const el = document.getElementById("kmChart");
+  if (!trip.days.length) {
+    el.innerHTML = "";
+    return;
+  }
+  const realIndexByDate = new Map(trip.days.map((d, i) => [d.date, i]));
+  const days = fillGaps ? fillDayGaps(trip.days) : trip.days;
+  const maxKm = Math.max(...days.map((d) => d.total_distance || 0), 1);
+  const shortDate = (iso) => new Date(`${iso}T00:00:00Z`)
+    .toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", timeZone: "UTC" });
+  const barsHtml = days.map((d, i) => {
+    const realIndex = realIndexByDate.get(d.date);
+    const hasRide = realIndex !== undefined && (d.total_distance || 0) > 0;
+    const label = shortDate(d.date);
+    if (hasRide) {
+      // A day with real (if small) distance must always read as taller
+      // than the flat "no ride" marker below — a big outlier day (a
+      // 400km+ leg) otherwise compresses every short-but-real day to a
+      // sliver indistinguishable from a rest day.
+      const heightPx = Math.max((d.total_distance || 0) / maxKm * KM_CHART_HEIGHT, KM_BAR_MIN_PX);
+      const tooltipText = `${label} — ${fmtKm(d.total_distance)} — ${fmtDuration(d.total_duration)}`;
+      return `<div class="km-bar" data-day-index="${realIndex}" style="grid-column:${i + 1};height:${heightPx}px"
+                   data-tooltip="${tooltipText}"></div>`;
+    }
+    return `<div class="km-bar km-bar-empty" style="grid-column:${i + 1}" data-tooltip="${label} — pas de trajet"></div>`;
+  }).join("");
+  el.innerHTML = `
+    <div class="km-chart-grid" style="grid-template-columns: repeat(${days.length}, minmax(3px, 16px));">
+      ${barsHtml}
+      <div class="km-chart-label-cell" style="grid-column:1">${shortDate(days[0].date)}</div>
+      <div class="km-chart-label-cell end" style="grid-column:${days.length}">${shortDate(days[days.length - 1].date)}</div>
+    </div>
+    <div class="km-chart-tooltip"></div>
+  `;
+  const tooltip = el.querySelector(".km-chart-tooltip");
+  el.querySelectorAll(".km-bar[data-day-index]").forEach((bar) => {
+    bar.addEventListener("click", () => focusDay(Number(bar.dataset.dayIndex)));
+  });
+  el.querySelectorAll(".km-bar").forEach((bar) => {
+    bar.addEventListener("mouseenter", () => {
+      const barRect = bar.getBoundingClientRect();
+      const containerRect = el.getBoundingClientRect();
+      tooltip.textContent = bar.dataset.tooltip;
+      tooltip.style.left = `${barRect.left - containerRect.left + barRect.width / 2}px`;
+      tooltip.style.top = `${barRect.top - containerRect.top}px`;
+      tooltip.classList.add("visible");
+    });
+    bar.addEventListener("mouseleave", () => tooltip.classList.remove("visible"));
+  });
 }
 
 (async () => {

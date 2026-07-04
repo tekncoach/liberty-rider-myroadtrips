@@ -172,6 +172,31 @@
   .stat .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; }
 
   #mapview { flex: 1; min-height: 0; }
+  #kmChart { flex: 1 1 180px; max-width: 480px; min-width: 120px; align-self: stretch; position: relative; }
+  #kmChart:empty { display: none; }
+  .km-chart-grid {
+    display: grid; grid-template-rows: 34px auto; row-gap: 2px; column-gap: 2px;
+    width: fit-content; max-width: 100%;
+  }
+  .km-bar {
+    grid-row: 1; align-self: end; background: var(--accent); border-radius: 3px 3px 0 0;
+    opacity: 0.85; cursor: pointer; transition: opacity .12s ease;
+  }
+  .km-bar:hover { opacity: 1; }
+  .km-bar.active { opacity: 1; }
+  .km-bar.dimmed { opacity: 0.25; }
+  .km-bar-empty {
+    height: 3px !important; background: var(--border); border-radius: 2px; cursor: default; opacity: 1;
+  }
+  .km-chart-label-cell { grid-row: 2; font-size: 9px; color: var(--muted); white-space: nowrap; }
+  .km-chart-label-cell.end { justify-self: end; }
+  .km-chart-tooltip {
+    position: absolute; transform: translate(-50%, -100%); margin-top: -6px;
+    background: var(--text); color: var(--bg); font-size: 10px; padding: 2px 6px;
+    border-radius: 4px; white-space: nowrap; pointer-events: none; opacity: 0;
+    transition: opacity .1s ease; z-index: 10;
+  }
+  .km-chart-tooltip.visible { opacity: 1; }
   #daylist { max-height: 220px; overflow-y: auto; border-top: 1px solid var(--border); }
   .day-row { padding: 8px 20px; border-bottom: 1px solid var(--border); font-size: 12px; display: flex; gap: 18px; align-items: center; cursor: pointer; }
   .day-row:hover { background: var(--row-hover); }
