@@ -10,21 +10,25 @@
     color-scheme: light;
     --bg: #f3f0ea; --panel: #faf8f4; --border: #ddd6c8; --text: #262220; --muted: #726a5f;
     --accent: #e0552b; --accent-soft: #e0552b1f; --row-hover: #ddd6c866; --shadow: 0 1px 2px #00000012;
+    --pause: #2b7de0;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       color-scheme: dark;
       --bg: #211e1c; --panel: #29251f; --border: #453f36; --text: #f1ece2; --muted: #a89e8d;
       --accent: #f0794f; --accent-soft: #f0794f2b; --row-hover: #45403633; --shadow: 0 1px 2px #00000040;
+      --pause: #5b9eef;
     }
   }
   :root[data-theme="dark"] {
     color-scheme: dark; --bg: #211e1c; --panel: #29251f; --border: #453f36; --text: #f1ece2; --muted: #a89e8d;
     --accent: #f0794f; --accent-soft: #f0794f2b; --row-hover: #45403633; --shadow: 0 1px 2px #00000040;
+    --pause: #5b9eef;
   }
   :root[data-theme="light"] {
     color-scheme: light; --bg: #f3f0ea; --panel: #faf8f4; --border: #ddd6c8; --text: #262220; --muted: #726a5f;
     --accent: #e0552b; --accent-soft: #e0552b1f; --row-hover: #ddd6c866; --shadow: 0 1px 2px #00000012;
+    --pause: #2b7de0;
   }
   * { box-sizing: border-box; }
   body {
@@ -172,31 +176,32 @@
   .stat .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; }
 
   #mapview { flex: 1; min-height: 0; }
-  #kmChart { flex: 1 1 180px; max-width: 480px; min-width: 120px; align-self: stretch; position: relative; }
-  #kmChart:empty { display: none; }
-  .km-chart-grid {
+  .mini-chart { flex: 1 1 180px; max-width: 480px; min-width: 120px; align-self: stretch; position: relative; }
+  .mini-chart:empty { display: none; }
+  .mini-chart .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 2px; }
+  .mini-chart-grid {
     display: grid; grid-template-rows: 34px auto; row-gap: 2px; column-gap: 2px;
     width: fit-content; max-width: 100%;
   }
-  .km-bar {
+  .mini-bar {
     grid-row: 1; align-self: end; background: var(--accent); border-radius: 3px 3px 0 0;
     opacity: 0.85; cursor: pointer; transition: opacity .12s ease;
   }
-  .km-bar:hover { opacity: 1; }
-  .km-bar.active { opacity: 1; }
-  .km-bar.dimmed { opacity: 0.25; }
+  .mini-bar:hover { opacity: 1; }
+  .mini-bar.active { opacity: 1; }
+  .mini-bar.dimmed { opacity: 0.25; }
   .km-bar-empty {
     height: 3px !important; background: var(--border); border-radius: 2px; cursor: default; opacity: 1;
   }
-  .km-chart-label-cell { grid-row: 2; font-size: 9px; color: var(--muted); white-space: nowrap; }
-  .km-chart-label-cell.end { justify-self: end; }
-  .km-chart-tooltip {
+  .mini-chart-label-cell { grid-row: 2; font-size: 9px; color: var(--muted); white-space: nowrap; }
+  .mini-chart-label-cell.end { justify-self: end; }
+  .mini-chart-tooltip {
     position: absolute; transform: translate(-50%, -100%); margin-top: -6px;
     background: var(--text); color: var(--bg); font-size: 10px; padding: 2px 6px;
     border-radius: 4px; white-space: nowrap; pointer-events: none; opacity: 0;
     transition: opacity .1s ease; z-index: 10;
   }
-  .km-chart-tooltip.visible { opacity: 1; }
+  .mini-chart-tooltip.visible { opacity: 1; }
   #daylist { max-height: 220px; overflow-y: auto; border-top: 1px solid var(--border); }
   .day-row { padding: 8px 20px; border-bottom: 1px solid var(--border); font-size: 12px; display: flex; gap: 18px; align-items: center; cursor: pointer; }
   .day-row:hover { background: var(--row-hover); }
@@ -240,6 +245,23 @@
   #rideModalHead h2 { font-size: 15.5px; margin: 0; flex: 1; }
   #rideModalSubtitle { padding: 0 18px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
   #rideModalStats { padding: 12px 18px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 10px; border-bottom: 1px solid var(--border); }
+  #rideModalTimeline {
+    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    flex: none; max-width: none;
+  }
+  #rideModalTimeline:empty { padding: 0; border-bottom: none; }
+  .ride-timeline-legend { display: flex; gap: 12px; font-size: 10px; color: var(--muted); margin-bottom: 5px; }
+  .ride-timeline-legend .swatch {
+    display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle;
+  }
+  .ride-timeline-legend .swatch.ride { background: var(--accent); }
+  .ride-timeline-legend .swatch.pause { background: var(--pause); }
+  .ride-timeline-track { display: flex; height: 18px; border-radius: 4px; overflow: hidden; gap: 1px; background: var(--bg); }
+  .ride-timeline-seg { height: 100%; min-width: 3px; flex-shrink: 0; cursor: pointer; opacity: 0.85; transition: opacity .12s ease; }
+  .ride-timeline-seg:hover { opacity: 1; }
+  .ride-timeline-seg.ride { background: var(--accent); }
+  .ride-timeline-seg.pause { background: var(--pause); }
+  .ride-timeline-labels { display: flex; justify-content: space-between; margin-top: 3px; font-size: 9px; color: var(--muted); }
   #rideModalMap { height: 320px; flex: none; }
   #rideModalNotes { padding: 10px 18px; border-bottom: 1px solid var(--border); }
   #rideModalNotesText {
@@ -350,6 +372,7 @@
     </div>
     <div id="rideModalSubtitle"></div>
     <div id="rideModalStats"></div>
+    <div id="rideModalTimeline" class="mini-chart"></div>
     <div id="rideModalNotes">
       <div id="rideModalNotesText" contenteditable="true" data-placeholder="Ajoute une note sur ce trajet… (un souvenir, un point de repère, une info utile)"></div>
     </div>

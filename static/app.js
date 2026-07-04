@@ -457,6 +457,7 @@ async function openRideModal(id) {
     <div class="stat"><div class="v">${ride.pause_count ?? 0}</div><div class="l">Pauses</div></div>
   `;
   document.getElementById("rideModalGpx").href = `/api/rides/${ride.id}/export.gpx`;
+  renderRideTimeline(ride);
   renderRideModalTags(ride.tags || []);
   renderRideModalMerge(ride);
   const notesEl = document.getElementById("rideModalNotesText");
@@ -578,7 +579,7 @@ async function showTripDetail(id) {
       <div class="stat"><div class="v">${fmtKm(trip.total_distance)}</div><div class="l">distance</div></div>
       <div class="stat"><div class="v">${fmtDuration(trip.total_duration)}</div><div class="l">durée totale</div></div>
       <div class="stat"><div class="v">${trip.total_pause_count}</div><div class="l">pauses</div></div>
-      <div id="kmChart"></div>
+      <div id="kmChart" class="mini-chart"></div>
       <label id="pausesToggleLabel"><input type="checkbox" id="pausesToggle" /> Afficher les pauses</label>
     </div>
     <div id="mapview"></div>
@@ -628,7 +629,7 @@ async function showTagDetail(id) {
       <label id="pausesToggleLabel"><input type="checkbox" id="pausesToggle" /> Afficher les pauses</label>
     </div>
     <div id="mapview"></div>
-    <div id="kmChart"></div>
+    <div id="kmChart" class="mini-chart"></div>
     <div id="daylist"></div>
   `;
 
@@ -793,7 +794,7 @@ function focusDay(index) {
   document.querySelectorAll("#daylist .day-row").forEach((row) => {
     row.classList.toggle("active", !reset && Number(row.dataset.dayIndex) === index);
   });
-  document.querySelectorAll("#kmChart .km-bar").forEach((bar) => {
+  document.querySelectorAll("#kmChart .mini-bar").forEach((bar) => {
     const i = Number(bar.dataset.dayIndex);
     bar.classList.toggle("active", !reset && i === index);
     bar.classList.toggle("dimmed", !reset && i !== index);
@@ -829,11 +830,29 @@ function fillDayGaps(days) {
   return filled;
 }
 
-// Must match .km-chart-bars's CSS height. KM_BAR_MIN_PX must stay clearly
-// above .km-bar-empty's fixed 3px so a short-but-real ride never blurs
-// together with a genuine rest day next to it.
+// Must match .mini-chart-grid's CSS row height. KM_BAR_MIN_PX must stay
+// clearly above .km-bar-empty's fixed 3px so a short-but-real ride never
+// blurs together with a genuine rest day next to it.
 const KM_CHART_HEIGHT = 34;
 const KM_BAR_MIN_PX = 8;
+
+// Wires the shared hover tooltip for a mini-chart (km/day, pause fatigue).
+// Bars carry their tooltip text in data-tooltip; this just positions the
+// shared floating label above whichever bar is hovered.
+function attachMiniChartTooltip(container, selector = ".mini-bar") {
+  const tooltip = container.querySelector(".mini-chart-tooltip");
+  container.querySelectorAll(selector).forEach((bar) => {
+    bar.addEventListener("mouseenter", () => {
+      const barRect = bar.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      tooltip.textContent = bar.dataset.tooltip;
+      tooltip.style.left = `${barRect.left - containerRect.left + barRect.width / 2}px`;
+      tooltip.style.top = `${barRect.top - containerRect.top}px`;
+      tooltip.classList.add("visible");
+    });
+    bar.addEventListener("mouseleave", () => tooltip.classList.remove("visible"));
+  });
+}
 
 // Single-hue magnitude chart (km/day) — days are a comparison of one
 // measure, not distinct series, so all bars share the accent color; the
@@ -864,34 +883,62 @@ function renderKmChart(trip, fillGaps) {
       // sliver indistinguishable from a rest day.
       const heightPx = Math.max((d.total_distance || 0) / maxKm * KM_CHART_HEIGHT, KM_BAR_MIN_PX);
       const tooltipText = `${label} — ${fmtKm(d.total_distance)} — ${fmtDuration(d.total_duration)}`;
-      return `<div class="km-bar" data-day-index="${realIndex}" style="grid-column:${i + 1};height:${heightPx}px"
+      return `<div class="mini-bar" data-day-index="${realIndex}" style="grid-column:${i + 1};height:${heightPx}px"
                    data-tooltip="${tooltipText}"></div>`;
     }
-    return `<div class="km-bar km-bar-empty" style="grid-column:${i + 1}" data-tooltip="${label} — pas de trajet"></div>`;
+    return `<div class="mini-bar km-bar-empty" style="grid-column:${i + 1}" data-tooltip="${label} — pas de trajet"></div>`;
   }).join("");
   el.innerHTML = `
-    <div class="km-chart-grid" style="grid-template-columns: repeat(${days.length}, minmax(3px, 16px));">
+    <div class="mini-chart-grid" style="grid-template-columns: repeat(${days.length}, minmax(3px, 16px));">
       ${barsHtml}
-      <div class="km-chart-label-cell" style="grid-column:1">${shortDate(days[0].date)}</div>
-      <div class="km-chart-label-cell end" style="grid-column:${days.length}">${shortDate(days[days.length - 1].date)}</div>
+      <div class="mini-chart-label-cell" style="grid-column:1">${shortDate(days[0].date)}</div>
+      <div class="mini-chart-label-cell end" style="grid-column:${days.length}">${shortDate(days[days.length - 1].date)}</div>
     </div>
-    <div class="km-chart-tooltip"></div>
+    <div class="mini-chart-tooltip"></div>
   `;
-  const tooltip = el.querySelector(".km-chart-tooltip");
-  el.querySelectorAll(".km-bar[data-day-index]").forEach((bar) => {
+  el.querySelectorAll(".mini-bar[data-day-index]").forEach((bar) => {
     bar.addEventListener("click", () => focusDay(Number(bar.dataset.dayIndex)));
   });
-  el.querySelectorAll(".km-bar").forEach((bar) => {
-    bar.addEventListener("mouseenter", () => {
-      const barRect = bar.getBoundingClientRect();
-      const containerRect = el.getBoundingClientRect();
-      tooltip.textContent = bar.dataset.tooltip;
-      tooltip.style.left = `${barRect.left - containerRect.left + barRect.width / 2}px`;
-      tooltip.style.top = `${barRect.top - containerRect.top}px`;
-      tooltip.classList.add("visible");
-    });
-    bar.addEventListener("mouseleave", () => tooltip.classList.remove("visible"));
-  });
+  attachMiniChartTooltip(el);
+}
+
+// Fatigue proxy: riding vs. paused, alternating, each segment's width
+// proportional to its real duration (not indexed by pause number, so a long
+// pause followed by a short ride leg is directly visible as shapes, not
+// just two adjacent bar heights). Segments are precomputed server-side
+// (see _merged_ride_timeline in app.py) — merged (tracking-split) rides
+// need each member ride's own pause/resume events resolved independently
+// before concatenating, which needs each member's own start/duration that
+// only the backend has; ride.timeline is already the final [{type, start,
+// end}, ...] list, this just renders it.
+function renderRideTimeline(ride) {
+  const el = document.getElementById("rideModalTimeline");
+  const segments = (ride.timeline || []).map((s) => ({ ...s, start: new Date(s.start), end: new Date(s.end) }));
+  if (!segments.length) {
+    el.innerHTML = "";
+    return;
+  }
+  const totalMs = segments.reduce((sum, s) => sum + (s.end - s.start), 0) || 1;
+  const segHtml = segments.map((s) => {
+    const pct = ((s.end - s.start) / totalMs) * 100;
+    const label = s.type === "ride" ? "Trajet" : "Pause";
+    const tooltipText = `${label} — ${fmtTime(s.start)} → ${fmtTime(s.end)} — ${fmtDuration((s.end - s.start) / 1000)}`;
+    return `<div class="ride-timeline-seg ${s.type}" style="flex-basis:${pct}%" data-tooltip="${tooltipText}"></div>`;
+  }).join("");
+  el.innerHTML = `
+    <div class="l">chronologie du trajet</div>
+    <div class="ride-timeline-legend">
+      <span><span class="swatch ride"></span>Trajet</span>
+      <span><span class="swatch pause"></span>Pause</span>
+    </div>
+    <div class="ride-timeline-track">${segHtml}</div>
+    <div class="ride-timeline-labels">
+      <span>${fmtTime(segments[0].start)}</span>
+      <span>${fmtTime(segments[segments.length - 1].end)}</span>
+    </div>
+    <div class="mini-chart-tooltip"></div>
+  `;
+  attachMiniChartTooltip(el, ".ride-timeline-seg");
 }
 
 (async () => {
