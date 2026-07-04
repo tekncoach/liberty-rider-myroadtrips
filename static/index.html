@@ -180,10 +180,23 @@
   .day-row .date { font-weight: 600; width: 100px; flex: none; }
   .day-row .m { color: var(--muted); }
   .day-rides { border-bottom: 1px solid var(--border); }
-  .day-ride-row { padding: 5px 20px 5px 42px; font-size: 11.5px; display: flex; align-items: center; gap: 12px; }
+  .day-ride-row { padding: 4px 20px 4px 42px; font-size: 11px; display: flex; align-items: center; gap: 10px; }
   .day-ride-row:hover { background: var(--row-hover); }
-  .day-ride-row .name { flex: 1; }
-  .day-ride-row .m { color: var(--muted); }
+  .day-ride-row .name {
+    flex: 0 1 150px; min-width: 0; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .day-ride-meta {
+    flex: none; display: flex; gap: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .day-ride-meta .meta-item { display: inline-flex; align-items: center; gap: 3px; }
+  .day-ride-meta .icon { opacity: 0.8; font-size: 10px; }
+  .day-ride-note {
+    flex: 1; min-width: 40px; font-size: 11px; color: var(--text); opacity: 0.85; outline: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 5px; padding: 2px 5px; margin: 0 -5px;
+  }
+  .day-ride-note:focus { white-space: normal; overflow: visible; }
+  .day-ride-note:hover, .day-ride-note:focus { background: var(--bg); opacity: 1; }
+  .day-ride-note:empty::before { content: attr(data-placeholder); color: var(--muted); font-style: italic; opacity: 0.7; }
   .trash-btn { border: none; background: none; cursor: pointer; font-size: 12px; padding: 2px 4px; opacity: 0.5; }
   .trash-btn:hover { opacity: 1; }
 
@@ -203,6 +216,13 @@
   #rideModalSubtitle { padding: 0 18px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
   #rideModalStats { padding: 12px 18px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 10px; border-bottom: 1px solid var(--border); }
   #rideModalMap { height: 320px; flex: none; }
+  #rideModalNotes { padding: 10px 18px; border-bottom: 1px solid var(--border); }
+  #rideModalNotesText {
+    font-size: 12.5px; line-height: 1.45; min-height: 1.4em; outline: none; white-space: pre-wrap;
+    border-radius: 6px; padding: 4px 6px; margin: -4px -6px;
+  }
+  #rideModalNotesText:hover, #rideModalNotesText:focus { background: var(--bg); }
+  #rideModalNotesText:empty::before { content: attr(data-placeholder); color: var(--muted); font-style: italic; }
   #rideModalTags { padding: 10px 18px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; border-bottom: 1px solid var(--border); }
   #rideModalMerge:empty { display: none; }
   #rideModalMerge { padding: 8px 18px; display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: #2b7de0; background: #2b7de014; border-bottom: 1px solid var(--border); }
@@ -305,6 +325,9 @@
     </div>
     <div id="rideModalSubtitle"></div>
     <div id="rideModalStats"></div>
+    <div id="rideModalNotes">
+      <div id="rideModalNotesText" contenteditable="true" data-placeholder="Ajoute une note sur ce trajet… (un souvenir, un point de repère, une info utile)"></div>
+    </div>
     <div id="rideModalTags">
       <span id="rideModalTagChips"></span>
       <input id="rideModalTagInput" placeholder="+ Tag…" />
