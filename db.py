@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS rides (
   created_roadbook_id TEXT,
   roadtrip_id INTEGER REFERENCES roadtrips(id),
   merged_into TEXT REFERENCES rides(id),
+  notes TEXT,
   raw_json TEXT
 );
 
@@ -125,6 +126,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE rides ADD COLUMN merged_into TEXT REFERENCES rides(id)")
         if "user_id" not in rides_cols:
             conn.execute("ALTER TABLE rides ADD COLUMN user_id TEXT REFERENCES users(id)")
+        if "notes" not in rides_cols:
+            conn.execute("ALTER TABLE rides ADD COLUMN notes TEXT")
 
         roadtrips_cols = {row["name"] for row in conn.execute("PRAGMA table_info(roadtrips)")}
         if "user_id" not in roadtrips_cols:
@@ -328,10 +331,11 @@ def upsert_ride(conn: sqlite3.Connection, user_id: str, ride: dict) -> None:
     roadbook = ride.get("createdRoadbook") or {}
 
     existing = conn.execute(
-        "SELECT roadtrip_id, merged_into FROM rides WHERE id = ?", (ride["id"],)
+        "SELECT roadtrip_id, merged_into, notes FROM rides WHERE id = ?", (ride["id"],)
     ).fetchone()
     keep_roadtrip_id = existing["roadtrip_id"] if existing else None
     keep_merged_into = existing["merged_into"] if existing else None
+    keep_notes = existing["notes"] if existing else None
 
     conn.execute(
         """
@@ -341,8 +345,8 @@ def upsert_ride(conn: sqlite3.Connection, user_id: str, ride: dict) -> None:
             hidden, state, detailed_polyline, preview_picture_url, gpx_export_url,
             start_lat, start_lon, stop_lat, stop_lon,
             vehicle_brand, vehicle_model, vehicle_type, vehicle_cc,
-            created_roadbook_id, roadtrip_id, merged_into, raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_roadbook_id, roadtrip_id, merged_into, notes, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             name=excluded.name, start_time=excluded.start_time, distance=excluded.distance,
             duration=excluded.duration, duration_without_pauses=excluded.duration_without_pauses,
@@ -368,7 +372,7 @@ def upsert_ride(conn: sqlite3.Connection, user_id: str, ride: dict) -> None:
             stop.get("latitude"), stop.get("longitude"),
             vehicle.get("brandName"), vehicle.get("modelName"),
             vehicle.get("vehicleType"), vehicle.get("engineDisplacementCc"),
-            roadbook.get("id"), keep_roadtrip_id, keep_merged_into,
+            roadbook.get("id"), keep_roadtrip_id, keep_merged_into, keep_notes,
             json.dumps(ride, ensure_ascii=False),
         ),
     )

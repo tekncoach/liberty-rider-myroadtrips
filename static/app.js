@@ -459,6 +459,8 @@ async function openRideModal(id) {
   document.getElementById("rideModalGpx").href = `/api/rides/${ride.id}/export.gpx`;
   renderRideModalTags(ride.tags || []);
   renderRideModalMerge(ride);
+  const notesEl = document.getElementById("rideModalNotesText");
+  notesEl.textContent = ride.notes || "";
   rideModalBackdrop.classList.add("visible");
 
   if (state.rideModalMap) {
@@ -505,6 +507,18 @@ function renderRideModalTags(tags) {
     });
   });
 }
+
+const rideModalNotesText = document.getElementById("rideModalNotesText");
+rideModalNotesText.addEventListener("blur", async () => {
+  const rideId = state.rideModalId;
+  if (!rideId) return;
+  const notes = rideModalNotesText.textContent.trim();
+  try {
+    await api(`/api/rides/${rideId}/notes`, { method: "PATCH", body: JSON.stringify({ notes }) });
+  } catch (e) {
+    // Non-fatal — leave the edited text as-is, don't lose what the user typed.
+  }
+});
 
 const rideModalTagInput = document.getElementById("rideModalTagInput");
 rideModalTagInput.addEventListener("keydown", async (e) => {
@@ -659,8 +673,13 @@ function renderDayList(trip) {
           const endTime = new Date(new Date(r.start_time).getTime() + (r.duration || 0) * 1000);
           return `
             <div class="day-ride-row">
-              <span class="name">${escapeHtml(r.name || fmtDate(r.start_time))}</span>
-              <span class="m">${fmtTime(r.start_time)} → ${fmtTime(endTime)} · ${fmtKm(r.distance)} · ${fmtDuration(r.duration)}</span>
+              <span class="name" title="${escapeHtml(r.name || fmtDate(r.start_time))}">${escapeHtml(r.name || fmtDate(r.start_time))}</span>
+              <span class="day-ride-meta">
+                <span class="meta-item"><span class="icon">🕐</span>${fmtTime(r.start_time)}→${fmtTime(endTime)}</span>
+                <span class="meta-item"><span class="icon">📏</span>${fmtKm(r.distance)}</span>
+                <span class="meta-item"><span class="icon">⏱</span>${fmtDuration(r.duration)}</span>
+              </span>
+              <div class="day-ride-note" contenteditable="true" data-ride="${rideId}" data-placeholder="+ note…" title="${escapeHtml(r.notes || "")}">${escapeHtml(r.notes || "")}</div>
               <button class="trash-btn" data-ride="${rideId}" title="Retirer du roadtrip">🗑</button>
             </div>
           `;
@@ -678,6 +697,18 @@ function renderDayList(trip) {
       if (!confirm("Retirer ce trajet du roadtrip ? Il redevient un trajet non groupé.")) return;
       await api(`/api/rides/${rideId}/roadtrip`, { method: "DELETE" });
       await refresh();
+    });
+  });
+  wrap.querySelectorAll(".day-ride-note").forEach((el) => {
+    el.addEventListener("click", (e) => e.stopPropagation());
+    el.addEventListener("blur", async () => {
+      const rideId = el.dataset.ride;
+      const notes = el.textContent.trim();
+      try {
+        await api(`/api/rides/${rideId}/notes`, { method: "PATCH", body: JSON.stringify({ notes }) });
+      } catch (e) {
+        // Non-fatal — leave the edited text as-is.
+      }
     });
   });
 }

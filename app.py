@@ -100,6 +100,7 @@ def ride_row_to_dict(row) -> dict:
         "roadtrip_id": row["roadtrip_id"],
         "preview_picture_url": row["preview_picture_url"],
         "merged_into": row["merged_into"],
+        "notes": row["notes"],
     }
 
 
@@ -344,6 +345,10 @@ class CreateRoadtripRequest(BaseModel):
 
 class AttachTagRequest(BaseModel):
     name: str
+
+
+class SetNotesRequest(BaseModel):
+    notes: str
 
 
 class RenameTagRequest(BaseModel):
@@ -611,6 +616,19 @@ def api_detach_tag(ride_id: str, tag_id: int, user=Depends(get_session_user)):
         )
         conn.commit()
         return {"tags": _ride_tags(conn, ride_id)}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/rides/{ride_id}/notes")
+def api_set_ride_notes(ride_id: str, req: SetNotesRequest, user=Depends(get_session_user)):
+    conn = db.connect()
+    try:
+        _get_owned_ride(conn, ride_id, user["id"])
+        notes = req.notes.strip()
+        conn.execute("UPDATE rides SET notes = ? WHERE id = ?", (notes or None, ride_id))
+        conn.commit()
+        return {"notes": notes}
     finally:
         conn.close()
 
