@@ -1,14 +1,33 @@
-"""Exchange a long-lived Firebase refresh token for a fresh ID (Bearer) token.
+"""Direct Firebase Auth REST calls: password sign-in and token refresh.
 
-Avoids re-logging in via a browser every ~1h: the refresh token is captured
-once from an already-authenticated browser session (see README note at the
-bottom of this file) and reused here indefinitely, until revoked.
+Used by app.py's login/sync endpoints — this is the only auth path in the
+app (email + password, exchanged server-side for a Firebase session), so
+these two calls are all it needs.
 """
 from __future__ import annotations
 
 import requests
 
 SECURE_TOKEN_URL = "https://securetoken.googleapis.com/v1/token"
+SIGN_IN_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
+
+
+def sign_in_with_password(email: str, password: str, api_key: str) -> dict:
+    """Exchanges an email/password directly with Firebase's own sign-in
+    endpoint (the same one the Liberty Rider web app calls). Returns
+    {"id_token": ..., "refresh_token": ...}. Raises requests.HTTPError with
+    Firebase's error message in the response body on failure (bad
+    credentials, wrong api_key, etc).
+    """
+    resp = requests.post(
+        SIGN_IN_URL,
+        params={"key": api_key},
+        json={"email": email, "password": password, "returnSecureToken": True},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return {"id_token": data["idToken"], "refresh_token": data["refreshToken"]}
 
 
 def refresh_id_token(refresh_token: str, api_key: str) -> dict:
@@ -30,25 +49,3 @@ def refresh_id_token(refresh_token: str, api_key: str) -> dict:
         "refresh_token": data["refresh_token"],
         "expires_in": data["expires_in"],
     }
-
-
-# --- One-time capture of the refresh token (done from an authenticated browser) ---
-#
-# Firebase Auth (web SDK) persists its session in IndexedDB, under a database
-# named "firebaseLocalStorageDb", store "firebaseLocalStorage". From a page
-# already logged into liberty-rider.com, running this JS in the page context
-# returns the current refresh token + the project's API key:
-#
-#   const dbs = await indexedDB.databases();
-#   const req = indexedDB.open("firebaseLocalStorageDb");
-#   req.onsuccess = () => {
-#     const db = req.result;
-#     const tx = db.transaction("firebaseLocalStorage", "readonly");
-#     tx.objectStore("firebaseLocalStorage").getAll().onsuccess = (e) => {
-#       console.log(JSON.stringify(e.target.result));
-#     };
-#   };
-#
-# The API key is also visible as the `key` query param on any request to
-# `securetoken.googleapis.com` or `identitytoolkit.googleapis.com` made during
-# login/token-refresh (visible in the Network tab).

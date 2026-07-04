@@ -17,17 +17,18 @@ far to walk further back, until a page comes back empty or short.
 from __future__ import annotations
 
 import db
-from liberty_client import LibertyRiderClient
 
 PAGE_SIZE = 50
 LAST_SYNC_KEY = "last_sync_max_start_time"
 
 
-def sync(token: str, full: bool = False, page_size: int = PAGE_SIZE) -> dict:
-    client = LibertyRiderClient(token)
+def sync(client, user_id: str, full: bool = False, page_size: int = PAGE_SIZE) -> dict:
+    """`client` is an already-authenticated LibertyRiderClient (app.py
+    resolves/refreshes the token before calling this); `user_id` scopes
+    what gets upserted and where the sync cursor is stored."""
     conn = db.connect()
     try:
-        last_sync_max = None if full else db.get_sync_state(conn, LAST_SYNC_KEY)
+        last_sync_max = None if full else db.get_sync_state(conn, user_id, LAST_SYNC_KEY)
 
         before = None
         newest_seen = None
@@ -49,7 +50,7 @@ def sync(token: str, full: bool = False, page_size: int = PAGE_SIZE) -> dict:
                 fetched += 1
                 if last_sync_max and ride["startTime"] <= last_sync_max:
                     continue
-                db.upsert_ride(conn, ride)
+                db.upsert_ride(conn, user_id, ride)
                 upserted += 1
             conn.commit()
 
@@ -62,23 +63,12 @@ def sync(token: str, full: bool = False, page_size: int = PAGE_SIZE) -> dict:
             before = oldest_in_page
 
         if newest_seen and (last_sync_max is None or newest_seen > last_sync_max):
-            db.set_sync_state(conn, LAST_SYNC_KEY, newest_seen)
+            db.set_sync_state(conn, user_id, LAST_SYNC_KEY, newest_seen)
             conn.commit()
 
-        total_rides = conn.execute("SELECT COUNT(*) AS n FROM rides").fetchone()["n"]
+        total_rides = conn.execute(
+            "SELECT COUNT(*) AS n FROM rides WHERE user_id = ?", (user_id,)
+        ).fetchone()["n"]
         return {"fetched": fetched, "upserted": upserted, "total_rides": total_rides}
     finally:
         conn.close()
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Sync Liberty Rider personal rides")
-    parser.add_argument("--token", required=True, help="Firebase Bearer token")
-    parser.add_argument("--full", action="store_true", help="Full re-sync of all rides")
-    args = parser.parse_args()
-
-    db.init_db()
-    summary = sync(args.token, full=args.full)
-    print(summary)

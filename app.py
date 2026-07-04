@@ -1,31 +1,82 @@
-"""FastAPI backend for the "Mes trajets" personal roadtrip organizer."""
+"""FastAPI backend for the "Mes trajets" personal roadtrip organizer.
+
+Multi-tenant: every request that touches ride/roadtrip/tag data requires a
+valid session (see `get_session_user`), and every query is scoped to that
+session's user. The only way to establish a session is POST /api/auth/login
+with an email + password, exchanged directly with Firebase — see
+firebase_refresh.py. There is no other login path.
+"""
 from __future__ import annotations
 
+import os
 import pathlib
-import subprocess
-import sys
 
 import gpxpy
 import gpxpy.gpx
 import polyline as polyline_lib
 import requests
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse
+from fastapi.responses import Response as RawResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import db
 import sync as sync_module
+from firebase_refresh import refresh_id_token, sign_in_with_password
+from liberty_client import LibertyRiderClient
 from utils import day_key, haversine_km
 
 ROOT = pathlib.Path(__file__).parent
 STATIC = ROOT / "static"
-TOKEN_FILE = ROOT / ".liberty_rider_token"
-REFRESH_TOKEN_FILE = ROOT / ".liberty_rider_refresh_token"
-API_KEY_FILE = ROOT / ".liberty_rider_firebase_api_key"
+
+SESSION_COOKIE = "session_id"
+# Liberty Rider's Firebase web API key — public by design (Firebase web API
+# keys identify the project, they don't grant access on their own), captured
+# from the site's own login network traffic. Override via env var if it
+# ever rotates.
+DEFAULT_FIREBASE_API_KEY = "AIzaSyCMLiqF3hrzqnf4ltuQjLMPSPh19rgDL5c"
+FIREBASE_API_KEY = os.environ.get("LIBERTY_RIDER_FIREBASE_API_KEY", DEFAULT_FIREBASE_API_KEY)
+# Set COOKIE_SECURE=1 behind HTTPS (any real deployment) so the session
+# cookie is never sent over plain HTTP. Left off by default for local dev.
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"
 
 app = FastAPI(title="Mes trajets — Liberty Rider")
 db.init_db()
+
+
+# --- auth plumbing -----------------------------------------------------
+
+def get_session_user(session_id: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    conn = db.connect()
+    try:
+        user = db.get_session_user(conn, session_id)
+        if not user:
+            raise HTTPException(status_code=401, detail="Session expired — log in again")
+        return user
+    finally:
+        conn.close()
+
+
+def _live_client_for(conn, user) -> LibertyRiderClient:
+    """A LibertyRiderClient using this user's saved bearer token, transparently
+    refreshed via their saved Firebase refresh token if it's expired."""
+    token = user["bearer_token"]
+    if not token:
+        raise HTTPException(status_code=401, detail="No Liberty Rider token on file — log in again")
+    client = LibertyRiderClient(token)
+    try:
+        client.get_current_user()
+        return client
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status not in (401, 403) or not user["refresh_token"] or not user["firebase_api_key"]:
+            raise
+    refreshed = refresh_id_token(user["refresh_token"], user["firebase_api_key"])
+    db.save_user_tokens(conn, user["id"], refreshed["id_token"], refreshed["refresh_token"], None)
+    return LibertyRiderClient(refreshed["id_token"])
 
 
 def ride_row_to_dict(row) -> dict:
@@ -173,9 +224,9 @@ def _build_gpx(conn, ride_rows) -> str:
     return gpx.to_xml()
 
 
-def _gpx_response(xml: str, name: str) -> Response:
+def _gpx_response(xml: str, name: str) -> RawResponse:
     filename = f"{name}.gpx".replace("/", "-")
-    return Response(
+    return RawResponse(
         content=xml,
         media_type="application/gpx+xml",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
@@ -277,8 +328,12 @@ def _is_merge_candidate(earlier: dict, later: dict) -> bool:
     return gap_hours < (30 / 60) and dist_km is not None and dist_km < 1.5
 
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
 class SyncRequest(BaseModel):
-    token: str | None = None
     full: bool = False
 
 
@@ -307,104 +362,132 @@ class MergeRidesRequest(BaseModel):
     ride_ids: list[str]
 
 
-@app.post("/api/sync")
-def api_sync(req: SyncRequest):
-    token = req.token or _read_saved_token()
-    if not token:
+# --- auth ---------------------------------------------------------------
+
+@app.post("/api/auth/login")
+def api_login(req: LoginRequest, response: Response):
+    if not FIREBASE_API_KEY:
         raise HTTPException(
-            status_code=400,
-            detail="No token available — paste one, or log in first (see the login button / `make login`).",
+            status_code=500,
+            detail="Server misconfigured: LIBERTY_RIDER_FIREBASE_API_KEY isn't set.",
         )
     try:
-        summary = sync_module.sync(token, full=req.full)
+        tokens = sign_in_with_password(req.email, req.password, FIREBASE_API_KEY)
+    except requests.HTTPError as e:
+        message = "Login failed"
+        if e.response is not None:
+            try:
+                message = e.response.json().get("error", {}).get("message", message)
+            except ValueError:
+                pass
+        raise HTTPException(status_code=401, detail=message)
+
+    client = LibertyRiderClient(tokens["id_token"])
+    try:
+        lr_user = client.get_current_user()
+    except requests.exceptions.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+
+    conn = db.connect()
+    try:
+        user_id = lr_user["id"]
+        db.upsert_user(conn, user_id, lr_user.get("firstName"), req.email)
+        db.save_user_tokens(conn, user_id, tokens["id_token"], tokens["refresh_token"], FIREBASE_API_KEY)
+        db.claim_orphaned_data(conn, user_id)
+        session_id = db.create_session(conn, user_id)
+    finally:
+        conn.close()
+
+    response.set_cookie(
+        SESSION_COOKIE, session_id, httponly=True, samesite="lax", secure=COOKIE_SECURE, max_age=60 * 60 * 24 * 30,
+    )
+    return {"ok": True, "first_name": lr_user.get("firstName")}
+
+
+@app.post("/api/auth/logout")
+def api_logout(response: Response, session_id: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
+    if session_id:
+        conn = db.connect()
+        try:
+            db.delete_session(conn, session_id)
+        finally:
+            conn.close()
+    response.delete_cookie(SESSION_COOKIE)
+    return {"ok": True}
+
+
+@app.get("/api/auth/status")
+def api_auth_status(session_id: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
+    if not session_id:
+        return {"logged_in": False}
+    conn = db.connect()
+    try:
+        user = db.get_session_user(conn, session_id)
+    finally:
+        conn.close()
+    if not user:
+        return {"logged_in": False}
+    return {"logged_in": True, "first_name": user["first_name"]}
+
+
+@app.get("/api/auth/profile")
+def api_auth_profile(user=Depends(get_session_user)):
+    conn = db.connect()
+    try:
+        client = _live_client_for(conn, user)
+        lr_user = client.get_current_user()
+    except requests.exceptions.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+    finally:
+        conn.close()
+    return {"first_name": lr_user.get("firstName") or user["first_name"], "manual_ride_count": lr_user.get("manualRideCount")}
+
+
+# --- sync -----------------------------------------------------------------
+
+@app.post("/api/sync")
+def api_sync(req: SyncRequest, user=Depends(get_session_user)):
+    conn = db.connect()
+    try:
+        client = _live_client_for(conn, user)
+    finally:
+        conn.close()
+    try:
+        summary = sync_module.sync(client, user["id"], full=req.full)
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
-            raise HTTPException(
-                status_code=401,
-                detail="Token expired or invalid — log in again (button, or `make login`).",
-            )
+            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.")
         raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return summary
 
 
-def _read_saved_token() -> str | None:
-    if TOKEN_FILE.exists():
-        return TOKEN_FILE.read_text().strip() or None
-    return None
-
-
-@app.get("/api/auth/status")
-def api_auth_status():
-    return {"has_saved_token": _read_saved_token() is not None}
-
-
-@app.post("/api/auth/login")
-def api_auth_login():
-    """Runs login_playwright.py: opens a real local browser, the user logs
-    into liberty-rider.com normally, and the script captures the resulting
-    tokens to disk (see that script's docstring). Blocks until it's done —
-    this is a local personal tool, so a long-running request here is fine."""
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "login_playwright.py")],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=330,
-    )
-    if result.returncode != 0:
-        raise HTTPException(
-            status_code=502,
-            detail=(result.stderr or result.stdout or "login_playwright.py failed").strip().splitlines()[-1],
-        )
-    return {"ok": True, "has_saved_token": _read_saved_token() is not None}
-
-
-@app.get("/api/auth/profile")
-def api_auth_profile():
-    token = _read_saved_token()
-    if not token:
-        raise HTTPException(status_code=401, detail="Not logged in")
-    from liberty_client import LibertyRiderClient
-
-    try:
-        user = LibertyRiderClient(token).get_current_user()
-    except requests.exceptions.HTTPError as e:
-        status = e.response.status_code if e.response is not None else None
-        if status in (401, 403):
-            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.")
-        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
-    return {"id": user.get("id"), "manual_ride_count": user.get("manualRideCount")}
-
-
-@app.post("/api/auth/logout")
-def api_auth_logout():
-    for f in (TOKEN_FILE, REFRESH_TOKEN_FILE, API_KEY_FILE):
-        f.unlink(missing_ok=True)
-    return {"ok": True}
-
+# --- rides ------------------------------------------------------------
 
 @app.get("/api/rides")
-def api_list_rides(grouped: bool | None = None):
+def api_list_rides(grouped: bool | None = None, user=Depends(get_session_user)):
     conn = db.connect()
     try:
         # merged_into IS NULL: a ride absorbed into another via a merge is
         # never listed on its own — only its merge representative is.
         if grouped is None:
             rows = conn.execute(
-                "SELECT * FROM rides WHERE merged_into IS NULL ORDER BY start_time DESC"
+                "SELECT * FROM rides WHERE user_id = ? AND merged_into IS NULL ORDER BY start_time DESC",
+                (user["id"],),
             ).fetchall()
         elif grouped:
             rows = conn.execute(
-                "SELECT * FROM rides WHERE roadtrip_id IS NOT NULL AND merged_into IS NULL "
-                "ORDER BY start_time DESC"
+                "SELECT * FROM rides WHERE user_id = ? AND roadtrip_id IS NOT NULL AND merged_into IS NULL "
+                "ORDER BY start_time DESC",
+                (user["id"],),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM rides WHERE roadtrip_id IS NULL AND merged_into IS NULL "
-                "ORDER BY start_time DESC"
+                "SELECT * FROM rides WHERE user_id = ? AND roadtrip_id IS NULL AND merged_into IS NULL "
+                "ORDER BY start_time DESC",
+                (user["id"],),
             ).fetchall()
         rides = [_merged_ride_dict(conn, r) for r in rows]
         _attach_tags_bulk(conn, rides)
@@ -414,13 +497,18 @@ def api_list_rides(grouped: bool | None = None):
         conn.close()
 
 
+def _get_owned_ride(conn, ride_id: str, user_id: str):
+    row = conn.execute("SELECT * FROM rides WHERE id = ? AND user_id = ?", (ride_id, user_id)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Ride not found")
+    return row
+
+
 @app.get("/api/rides/{ride_id}")
-def api_ride_detail(ride_id: str):
+def api_ride_detail(ride_id: str, user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        row = conn.execute("SELECT * FROM rides WHERE id = ?", (ride_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Ride not found")
+        row = _get_owned_ride(conn, ride_id, user["id"])
         ride = _merged_ride_dict(conn, row)
         ride["polyline"], ride["pauses"] = _merged_polyline_and_pauses(conn, row)
         ride["tags"] = _ride_tags(conn, ride_id)
@@ -430,14 +518,15 @@ def api_ride_detail(ride_id: str):
 
 
 @app.post("/api/rides/merge")
-def api_merge_rides(req: MergeRidesRequest):
+def api_merge_rides(req: MergeRidesRequest, user=Depends(get_session_user)):
     if len(req.ride_ids) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 ride ids to merge")
     conn = db.connect()
     try:
         placeholders = ",".join("?" * len(req.ride_ids))
         rows = conn.execute(
-            f"SELECT * FROM rides WHERE id IN ({placeholders})", req.ride_ids
+            f"SELECT * FROM rides WHERE id IN ({placeholders}) AND user_id = ?",
+            [*req.ride_ids, user["id"]],
         ).fetchall()
         if len(rows) != len(req.ride_ids):
             raise HTTPException(status_code=404, detail="One or more rides not found")
@@ -474,9 +563,10 @@ def api_merge_rides(req: MergeRidesRequest):
 
 
 @app.delete("/api/rides/{ride_id}/merge")
-def api_unmerge_ride(ride_id: str):
+def api_unmerge_ride(ride_id: str, user=Depends(get_session_user)):
     conn = db.connect()
     try:
+        _get_owned_ride(conn, ride_id, user["id"])
         conn.execute("UPDATE rides SET merged_into = NULL WHERE merged_into = ?", (ride_id,))
         conn.commit()
         return {"ok": True}
@@ -485,17 +575,20 @@ def api_unmerge_ride(ride_id: str):
 
 
 @app.post("/api/rides/{ride_id}/tags")
-def api_attach_tag(ride_id: str, req: AttachTagRequest):
+def api_attach_tag(ride_id: str, req: AttachTagRequest, user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        ride = conn.execute("SELECT id FROM rides WHERE id = ?", (ride_id,)).fetchone()
-        if not ride:
-            raise HTTPException(status_code=404, detail="Ride not found")
+        _get_owned_ride(conn, ride_id, user["id"])
         name = req.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="Tag name must not be empty")
-        conn.execute("INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO NOTHING", (name,))
-        tag = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
+        conn.execute(
+            "INSERT INTO tags (user_id, name) VALUES (?, ?) ON CONFLICT(user_id, name) DO NOTHING",
+            (user["id"], name),
+        )
+        tag = conn.execute(
+            "SELECT id FROM tags WHERE user_id = ? AND name = ?", (user["id"], name)
+        ).fetchone()
         conn.execute(
             "INSERT INTO ride_tags (ride_id, tag_id) VALUES (?, ?) ON CONFLICT(ride_id, tag_id) DO NOTHING",
             (ride_id, tag["id"]),
@@ -507,10 +600,15 @@ def api_attach_tag(ride_id: str, req: AttachTagRequest):
 
 
 @app.delete("/api/rides/{ride_id}/tags/{tag_id}")
-def api_detach_tag(ride_id: str, tag_id: int):
+def api_detach_tag(ride_id: str, tag_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        conn.execute("DELETE FROM ride_tags WHERE ride_id = ? AND tag_id = ?", (ride_id, tag_id))
+        _get_owned_ride(conn, ride_id, user["id"])
+        conn.execute(
+            "DELETE FROM ride_tags WHERE ride_id = ? AND tag_id = ? "
+            "AND tag_id IN (SELECT id FROM tags WHERE user_id = ?)",
+            (ride_id, tag_id, user["id"]),
+        )
         conn.commit()
         return {"tags": _ride_tags(conn, ride_id)}
     finally:
@@ -518,32 +616,28 @@ def api_detach_tag(ride_id: str, tag_id: int):
 
 
 @app.get("/api/rides/{ride_id}/export.gpx")
-def api_export_ride_gpx(ride_id: str):
+def api_export_ride_gpx(ride_id: str, user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        row = conn.execute("SELECT * FROM rides WHERE id = ?", (ride_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Ride not found")
+        row = _get_owned_ride(conn, ride_id, user["id"])
         return _gpx_response(_build_gpx(conn, [row]), row["name"] or row["id"])
     finally:
         conn.close()
 
 
-@app.get("/api/roadtrips")
-def api_list_roadtrips():
+@app.delete("/api/rides/{ride_id}/roadtrip")
+def api_detach_ride(ride_id: str, user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        trips = conn.execute("SELECT * FROM roadtrips ORDER BY id DESC").fetchall()
-        out = []
-        for t in trips:
-            rides = conn.execute(
-                "SELECT * FROM rides WHERE roadtrip_id = ? ORDER BY start_time", (t["id"],)
-            ).fetchall()
-            out.append(_roadtrip_summary(conn, t, rides))
-        return out
+        _get_owned_ride(conn, ride_id, user["id"])
+        conn.execute("UPDATE rides SET roadtrip_id = NULL WHERE id = ?", (ride_id,))
+        conn.commit()
+        return {"ok": True}
     finally:
         conn.close()
 
+
+# --- roadtrips --------------------------------------------------------
 
 def _roadtrip_summary(conn, trip_row, ride_rows) -> dict:
     rides = [_merged_ride_dict(conn, r) for r in ride_rows]
@@ -569,13 +663,36 @@ def _roadtrip_summary(conn, trip_row, ride_rows) -> dict:
     }
 
 
-@app.get("/api/roadtrips/{trip_id}")
-def api_roadtrip_detail(trip_id: int):
+def _get_owned_roadtrip(conn, trip_id: int, user_id: str):
+    row = conn.execute("SELECT * FROM roadtrips WHERE id = ? AND user_id = ?", (trip_id, user_id)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Roadtrip not found")
+    return row
+
+
+@app.get("/api/roadtrips")
+def api_list_roadtrips(user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        trip = conn.execute("SELECT * FROM roadtrips WHERE id = ?", (trip_id,)).fetchone()
-        if not trip:
-            raise HTTPException(status_code=404, detail="Roadtrip not found")
+        trips = conn.execute(
+            "SELECT * FROM roadtrips WHERE user_id = ? ORDER BY id DESC", (user["id"],)
+        ).fetchall()
+        out = []
+        for t in trips:
+            rides = conn.execute(
+                "SELECT * FROM rides WHERE roadtrip_id = ? ORDER BY start_time", (t["id"],)
+            ).fetchall()
+            out.append(_roadtrip_summary(conn, t, rides))
+        return out
+    finally:
+        conn.close()
+
+
+@app.get("/api/roadtrips/{trip_id}")
+def api_roadtrip_detail(trip_id: int, user=Depends(get_session_user)):
+    conn = db.connect()
+    try:
+        trip = _get_owned_roadtrip(conn, trip_id, user["id"])
         ride_rows = conn.execute(
             "SELECT * FROM rides WHERE roadtrip_id = ? ORDER BY start_time", (trip_id,)
         ).fetchall()
@@ -593,15 +710,18 @@ def api_roadtrip_detail(trip_id: int):
 
 
 @app.post("/api/roadtrips")
-def api_create_roadtrip(req: CreateRoadtripRequest):
+def api_create_roadtrip(req: CreateRoadtripRequest, user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        cur = conn.execute("INSERT INTO roadtrips (name) VALUES (?)", (req.name,))
+        cur = conn.execute(
+            "INSERT INTO roadtrips (user_id, name) VALUES (?, ?)", (user["id"], req.name)
+        )
         trip_id = cur.lastrowid
         if req.ride_ids:
-            conn.executemany(
-                "UPDATE rides SET roadtrip_id = ? WHERE id = ?",
-                [(trip_id, rid) for rid in req.ride_ids],
+            placeholders = ",".join("?" * len(req.ride_ids))
+            conn.execute(
+                f"UPDATE rides SET roadtrip_id = ? WHERE id IN ({placeholders}) AND user_id = ?",
+                [trip_id, *req.ride_ids, user["id"]],
             )
         conn.commit()
         return {"id": trip_id}
@@ -610,9 +730,10 @@ def api_create_roadtrip(req: CreateRoadtripRequest):
 
 
 @app.patch("/api/roadtrips/{trip_id}")
-def api_rename_roadtrip(trip_id: int, req: RenameRoadtripRequest):
+def api_rename_roadtrip(trip_id: int, req: RenameRoadtripRequest, user=Depends(get_session_user)):
     conn = db.connect()
     try:
+        _get_owned_roadtrip(conn, trip_id, user["id"])
         conn.execute("UPDATE roadtrips SET name = ? WHERE id = ?", (req.name, trip_id))
         conn.commit()
         return {"ok": True}
@@ -621,9 +742,10 @@ def api_rename_roadtrip(trip_id: int, req: RenameRoadtripRequest):
 
 
 @app.delete("/api/roadtrips/{trip_id}")
-def api_delete_roadtrip(trip_id: int):
+def api_delete_roadtrip(trip_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
+        _get_owned_roadtrip(conn, trip_id, user["id"])
         conn.execute("UPDATE rides SET roadtrip_id = NULL WHERE roadtrip_id = ?", (trip_id,))
         conn.execute("DELETE FROM roadtrips WHERE id = ?", (trip_id,))
         conn.commit()
@@ -633,15 +755,14 @@ def api_delete_roadtrip(trip_id: int):
 
 
 @app.post("/api/roadtrips/{trip_id}/rides")
-def api_add_rides(trip_id: int, req: AddRidesRequest):
+def api_add_rides(trip_id: int, req: AddRidesRequest, user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        trip = conn.execute("SELECT id FROM roadtrips WHERE id = ?", (trip_id,)).fetchone()
-        if not trip:
-            raise HTTPException(status_code=404, detail="Roadtrip not found")
-        conn.executemany(
-            "UPDATE rides SET roadtrip_id = ? WHERE id = ?",
-            [(trip_id, rid) for rid in req.ride_ids],
+        _get_owned_roadtrip(conn, trip_id, user["id"])
+        placeholders = ",".join("?" * len(req.ride_ids))
+        conn.execute(
+            f"UPDATE rides SET roadtrip_id = ? WHERE id IN ({placeholders}) AND user_id = ?",
+            [trip_id, *req.ride_ids, user["id"]],
         )
         conn.commit()
         return {"ok": True}
@@ -649,24 +770,11 @@ def api_add_rides(trip_id: int, req: AddRidesRequest):
         conn.close()
 
 
-@app.delete("/api/rides/{ride_id}/roadtrip")
-def api_detach_ride(ride_id: str):
-    conn = db.connect()
-    try:
-        conn.execute("UPDATE rides SET roadtrip_id = NULL WHERE id = ?", (ride_id,))
-        conn.commit()
-        return {"ok": True}
-    finally:
-        conn.close()
-
-
 @app.get("/api/roadtrips/{trip_id}/export.gpx")
-def api_export_gpx(trip_id: int):
+def api_export_gpx(trip_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        trip = conn.execute("SELECT * FROM roadtrips WHERE id = ?", (trip_id,)).fetchone()
-        if not trip:
-            raise HTTPException(status_code=404, detail="Roadtrip not found")
+        trip = _get_owned_roadtrip(conn, trip_id, user["id"])
         ride_rows = conn.execute(
             "SELECT * FROM rides WHERE roadtrip_id = ? ORDER BY start_time", (trip_id,)
         ).fetchall()
@@ -674,6 +782,8 @@ def api_export_gpx(trip_id: int):
     finally:
         conn.close()
 
+
+# --- tags ---------------------------------------------------------------
 
 def _tag_summary(conn, tag_row, ride_rows) -> dict:
     rides = [_merged_ride_dict(conn, r) for r in ride_rows]
@@ -702,23 +812,30 @@ def _tag_ride_rows(conn, tag_id: int):
     ).fetchall()
 
 
+def _get_owned_tag(conn, tag_id: int, user_id: str):
+    row = conn.execute("SELECT * FROM tags WHERE id = ? AND user_id = ?", (tag_id, user_id)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    return row
+
+
 @app.get("/api/tags")
-def api_list_tags():
+def api_list_tags(user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        tags = conn.execute("SELECT * FROM tags ORDER BY name").fetchall()
+        tags = conn.execute(
+            "SELECT * FROM tags WHERE user_id = ? ORDER BY name", (user["id"],)
+        ).fetchall()
         return [_tag_summary(conn, t, _tag_ride_rows(conn, t["id"])) for t in tags]
     finally:
         conn.close()
 
 
 @app.get("/api/tags/{tag_id}")
-def api_tag_detail(tag_id: int):
+def api_tag_detail(tag_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        tag = conn.execute("SELECT * FROM tags WHERE id = ?", (tag_id,)).fetchone()
-        if not tag:
-            raise HTTPException(status_code=404, detail="Tag not found")
+        tag = _get_owned_tag(conn, tag_id, user["id"])
         ride_rows = _tag_ride_rows(conn, tag_id)
         rides = [_merged_ride_dict(conn, r) for r in ride_rows]
         polylines, pauses = _polylines_and_pauses(conn, ride_rows)
@@ -734,9 +851,10 @@ def api_tag_detail(tag_id: int):
 
 
 @app.patch("/api/tags/{tag_id}")
-def api_rename_tag(tag_id: int, req: RenameTagRequest):
+def api_rename_tag(tag_id: int, req: RenameTagRequest, user=Depends(get_session_user)):
     conn = db.connect()
     try:
+        _get_owned_tag(conn, tag_id, user["id"])
         name = req.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="Tag name must not be empty")
@@ -748,9 +866,10 @@ def api_rename_tag(tag_id: int, req: RenameTagRequest):
 
 
 @app.delete("/api/tags/{tag_id}")
-def api_delete_tag(tag_id: int):
+def api_delete_tag(tag_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
+        _get_owned_tag(conn, tag_id, user["id"])
         conn.execute("DELETE FROM ride_tags WHERE tag_id = ?", (tag_id,))
         conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
         conn.commit()
@@ -760,12 +879,10 @@ def api_delete_tag(tag_id: int):
 
 
 @app.get("/api/tags/{tag_id}/export.gpx")
-def api_export_tag_gpx(tag_id: int):
+def api_export_tag_gpx(tag_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
-        tag = conn.execute("SELECT * FROM tags WHERE id = ?", (tag_id,)).fetchone()
-        if not tag:
-            raise HTTPException(status_code=404, detail="Tag not found")
+        tag = _get_owned_tag(conn, tag_id, user["id"])
         ride_rows = _tag_ride_rows(conn, tag_id)
         return _gpx_response(_build_gpx(conn, ride_rows), tag["name"] or "tag")
     finally:

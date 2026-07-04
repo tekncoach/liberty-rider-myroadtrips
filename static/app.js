@@ -60,64 +60,86 @@ function escapeHtml(s) {
 }
 
 // --- auth ---
-async function refreshAuthStatus() {
-  const { has_saved_token } = await api("/api/auth/status");
-  const el = document.getElementById("authStatus");
-  el.classList.toggle("connected", has_saved_token);
-  el.textContent = has_saved_token ? "✓ Connecté" : "Pas encore connecté.";
-  document.getElementById("loginBtn").style.display = has_saved_token ? "none" : "";
-  document.getElementById("logoutBtn").style.display = has_saved_token ? "" : "none";
-
-  const profileEl = document.getElementById("profileInfo");
-  if (has_saved_token) {
-    try {
-      const profile = await api("/api/auth/profile");
-      profileEl.textContent = `${profile.manual_ride_count ?? "?"} trajets enregistrés côté Liberty Rider`;
-    } catch (e) {
-      profileEl.textContent = "";
-    }
-  } else {
-    profileEl.textContent = "";
-  }
-  return has_saved_token;
-}
-
-document.getElementById("loginBtn").addEventListener("click", async () => {
-  const statusEl = document.getElementById("syncstatus");
+// The whole app is gated behind a session: #authScreen (intro + login form)
+// is the only thing shown until /api/auth/status confirms a session, at
+// which point #app (and only then) fetches and renders any personal data.
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("loginEmail").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  const errorEl = document.getElementById("loginError");
   const btn = document.getElementById("loginBtn");
   btn.disabled = true;
-  statusEl.textContent = "Une fenêtre de navigateur va s'ouvrir — connecte-toi sur Liberty Rider…";
+  errorEl.textContent = "";
   try {
-    await api("/api/auth/login", { method: "POST" });
-    await refreshAuthStatus();
-    statusEl.textContent = "Connecté ! Synchronisation…";
-    await doSync(false);
+    const result = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+    document.getElementById("loginPassword").value = "";
+    await enterApp(result.first_name);
   } catch (e) {
-    statusEl.textContent = "Échec de la connexion : " + e.message;
+    errorEl.textContent = "Connexion impossible : " + e.message;
   } finally {
     btn.disabled = false;
   }
 });
 
 document.getElementById("logoutBtn").addEventListener("click", async () => {
-  if (!confirm("Oublier le token enregistré ? Il faudra se reconnecter pour synchroniser.")) return;
+  document.getElementById("userMenu").classList.remove("open");
   await api("/api/auth/logout", { method: "POST" });
-  document.getElementById("syncstatus").textContent = "Déconnecté.";
-  await refreshAuthStatus();
+  document.getElementById("app").style.display = "none";
+  document.getElementById("authScreen").style.display = "flex";
 });
+
+document.getElementById("userMenuBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  document.getElementById("userMenu").classList.toggle("open");
+});
+document.addEventListener("click", (e) => {
+  const menu = document.getElementById("userMenu");
+  if (!menu.contains(e.target) && e.target.id !== "userMenuBtn") menu.classList.remove("open");
+});
+
+async function enterApp(firstName) {
+  document.getElementById("authScreen").style.display = "none";
+  document.getElementById("app").style.display = "flex";
+  setProfileGreeting(firstName);
+  switchTab(state.tab);
+  await refresh();
+  refreshProfile();
+}
+
+function setProfileGreeting(firstName) {
+  document.getElementById("userAvatar").textContent = (firstName || "?").charAt(0).toUpperCase();
+  document.getElementById("userName").textContent = firstName || "Connecté(e)";
+}
+
+async function refreshProfile() {
+  try {
+    const profile = await api("/api/auth/profile");
+    if (profile.first_name) {
+      document.getElementById("userAvatar").textContent = profile.first_name.charAt(0).toUpperCase();
+      document.getElementById("userName").textContent = profile.first_name;
+    }
+    document.getElementById("userSub").textContent =
+      `${profile.manual_ride_count ?? "?"} trajets Liberty Rider`;
+  } catch (e) {
+    // Non-fatal — the greeting set at login is still shown.
+  }
+}
 
 // --- sync ---
 document.getElementById("syncBtn").addEventListener("click", () => doSync(false));
-document.getElementById("syncFullBtn").addEventListener("click", () => doSync(true));
+document.getElementById("syncFullBtn").addEventListener("click", () => {
+  document.getElementById("userMenu").classList.remove("open");
+  doSync(true);
+});
 
 async function doSync(full) {
-  const token = document.getElementById("token").value.trim() || null;
   const statusEl = document.getElementById("syncstatus");
   statusEl.textContent = full ? "Synchronisation complète en cours…" : "Synchronisation en cours…";
   document.getElementById("syncBtn").disabled = true;
   document.getElementById("syncFullBtn").disabled = true;
   try {
-    const summary = await api("/api/sync", { method: "POST", body: JSON.stringify({ token, full }) });
+    const summary = await api("/api/sync", { method: "POST", body: JSON.stringify({ full }) });
     statusEl.textContent = `${summary.upserted} nouveau(x) / ${summary.total_rides} au total.`;
     await refresh();
   } catch (e) {
@@ -241,6 +263,16 @@ function renderTagRow(t) {
 // Groups `items` into sticky year headers + month sub-headers, using
 // `getDate(item)` (an ISO date/datetime string) to bucket them.
 function renderYearMonthGroups(wrap, items, getDate, renderRow, collapsedSet, onToggleYear) {
+  const yearCounts = new Map();
+  const monthCounts = new Map();
+  for (const item of items) {
+    const d = new Date(getDate(item));
+    const year = d.getFullYear();
+    const monthKey = `${year}-${d.getMonth()}`;
+    yearCounts.set(year, (yearCounts.get(year) || 0) + 1);
+    monthCounts.set(monthKey, (monthCounts.get(monthKey) || 0) + 1);
+  }
+
   let lastYear = null, lastMonth = null, yearBody = null;
   for (const item of items) {
     const d = new Date(getDate(item));
@@ -250,7 +282,8 @@ function renderYearMonthGroups(wrap, items, getDate, renderRow, collapsedSet, on
       const collapsed = collapsedSet.has(year);
       const yh = document.createElement("div");
       yh.className = "year-header";
-      yh.innerHTML = `<span class="chevron">${collapsed ? "▸" : "▾"}</span> ${year}`;
+      yh.innerHTML = `<span class="chevron">${collapsed ? "▸" : "▾"}</span> ${year} `
+        + `<span class="count">(${yearCounts.get(year)})</span>`;
       yh.addEventListener("click", () => onToggleYear(year));
       wrap.appendChild(yh);
       yearBody = document.createElement("div");
@@ -263,7 +296,7 @@ function renderYearMonthGroups(wrap, items, getDate, renderRow, collapsedSet, on
     if (month !== lastMonth) {
       const mh = document.createElement("div");
       mh.className = "month-header";
-      mh.textContent = MONTHS_FR[month];
+      mh.innerHTML = `${MONTHS_FR[month]} <span class="count">(${monthCounts.get(`${year}-${month}`)})</span>`;
       yearBody.appendChild(mh);
       lastMonth = month;
     }
@@ -734,6 +767,11 @@ function focusDay(index) {
   }
 }
 
-switchTab(state.tab);
-refresh();
-refreshAuthStatus();
+(async () => {
+  const status = await api("/api/auth/status");
+  if (status.logged_in) {
+    await enterApp(status.first_name);
+  }
+  // else: leave #authScreen showing, #app stays hidden — no data is ever
+  // fetched before a session is confirmed.
+})();

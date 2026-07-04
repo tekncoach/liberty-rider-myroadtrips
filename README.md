@@ -1,15 +1,16 @@
 # Liberty Rider — Mes trajets
 
-A self-hosted tool for organizing your personal ride history from the
-[Liberty Rider](https://liberty-rider.com/) motorcycle app. Liberty Rider's
-own web app only shows "roadbooks" you've explicitly published — it has no
-view of your raw ride history ("Mes trajets" / stopped rides). This tool
-syncs that history into a local database and gives you a map-based UI to
+A self-hosted, multi-user tool for organizing your personal ride history
+from the [Liberty Rider](https://liberty-rider.com/) motorcycle app. Liberty
+Rider's own web app only shows "roadbooks" you've explicitly published — it
+has no view of your raw ride history ("Mes trajets" / stopped rides). This
+tool syncs that history into a database and gives you a map-based UI to
 group rides into multi-day roadtrips, tag them by geographic zone, and
 clean up tracking artifacts like a single ride getting split in two.
 
-It's built for one user at a time, running locally, against your own
-Liberty Rider account.
+Each account is scoped to its own data — logging in with your Liberty Rider
+email/password only ever shows *your* rides, never anyone else's, whether
+you're running this for yourself or hosting it for a few people.
 
 ## Features
 
@@ -41,68 +42,34 @@ Coming soon.
 
 ```bash
 make install
-```
-
-### 1. Get a Bearer token
-
-The Liberty Rider API isn't public, so there's no API key to request. Three
-ways to get a token, from most to least convenient:
-
-**Recommended — `make login`**: opens a real browser window on
-liberty-rider.com. Log in exactly as you normally would — your password
-goes straight to Liberty Rider's own login page and this script never sees
-it. It watches network traffic for the resulting token and captures it
-automatically, along with the underlying Firebase refresh token, so future
-tokens can be renewed with `make refresh-token` without opening a browser
-again.
-
-```bash
-make login-setup   # one-time: installs Playwright + a Chromium build
-make login
-```
-
-**Alternative — `make login-password`**: skips the browser and exchanges
-your email/password directly with Firebase's login endpoint. Only use this
-if you have a specific reason to avoid a browser (e.g. a headless server) —
-read the security note at the top of `login_password.py` first, since it
-means typing your real password into a third-party script rather than
-Liberty Rider's own login page.
-
-```bash
-make login-password EMAIL=you@example.com
-```
-
-**Manual fallback**: copy the token straight out of your browser's
-DevTools, no scripts involved:
-
-1. Log into [liberty-rider.com](https://liberty-rider.com/) in a browser.
-2. Open DevTools → Network tab.
-3. Find any request to `api.liberty-rider.com/graphql`.
-4. Copy the `authorization` request header value, then strip the leading
-   `Bearer ` prefix — you just need the raw JWT (`eyJ...`).
-
-Either way, the token is a short-lived Firebase ID token (~1 hour) — once
-you have the refresh token too (via either `make login*` option above),
-`make refresh-token` mints new ones indefinitely without any further login.
-
-### 2. Sync your rides
-
-```bash
-make sync TOKEN="eyJ..."
-```
-
-This does an incremental sync (only rides newer than the last sync). Use
-`make sync-full TOKEN=...` to re-download the entire history. You can also
-paste the token directly into the web UI's sync box instead of using the
-Makefile.
-
-### 3. Run the app
-
-```bash
 make run
 ```
 
-Then open **http://127.0.0.1:8420**.
+Then open **http://127.0.0.1:8420** and log in with your Liberty Rider
+email and password — that's it. There's no separate token to fetch or paste;
+the app exchanges your credentials directly with Firebase (the same
+identity provider Liberty Rider's own web app uses) and keeps a session for
+you from then on. Your password is never stored — only the resulting
+session tokens are, encrypted-at-rest storage of which is on the roadmap
+before this is used for anyone but yourself (see Disclaimer).
+
+Once logged in, click **Synchroniser** to pull your ride history in, then
+**Full sync** any time you want to re-walk the entire history instead of
+just what's new.
+
+### Running this for more than one person
+
+Every account is fully isolated (its own rides/roadtrips/tags, scoped by
+your Liberty Rider user id) — logging in just works for anyone with a
+Liberty Rider account, no per-user setup needed. If you deploy this
+somewhere reachable over the network rather than on `127.0.0.1`, set:
+
+```bash
+export COOKIE_SECURE=1   # only send the session cookie over HTTPS
+```
+
+and put a real HTTPS reverse proxy in front of it — the app itself doesn't
+terminate TLS.
 
 ## How it works
 
@@ -112,19 +79,27 @@ Then open **http://127.0.0.1:8420**.
   gitignored.
 - **Frontend**: a single-page vanilla-JS app (`static/index.html`,
   `static/app.js`) using Leaflet for mapping, with no build step.
-- **Auth**: `login_playwright.py` / `login_password.py` / manual DevTools
-  copy all end up writing the same three files at the repo root —
-  `.liberty_rider_token`, `.liberty_rider_refresh_token`,
-  `.liberty_rider_firebase_api_key` — all gitignored, never committed, and
-  read by nothing except this app running on your own machine.
+- **Auth**: one method — email + password, exchanged directly with
+  Firebase (`firebase_refresh.py`). On success the app looks up your
+  Liberty Rider user id (`currentUser.id` — the same id Liberty Rider
+  itself uses) and creates a `users` row keyed by it, plus a session
+  cookie. Every ride/roadtrip/tag row is scoped to that id, and every
+  request needs a valid session — see `docs/ARCHITECTURE.md`.
 
 ## Disclaimer
 
+This is an independent, unofficial, community-built project. It is **not
+affiliated with, endorsed by, sponsored by, or in any way officially
+connected to Liberty Rider**, or any of its subsidiaries or affiliates. The
+name "Liberty Rider" and any related names, marks, emblems, and images are
+registered trademarks of their respective owners. The official Liberty
+Rider app and website are at **[liberty-rider.com](https://liberty-rider.com/)**.
+
 This project talks to an **undocumented, reverse-engineered** Liberty Rider
-API. It is not officially supported, may break at any time if Liberty Rider
-changes their API, and is **not affiliated with, endorsed by, or supported
-by Liberty Rider** in any way. Use at your own risk, against your own
-account only.
+API that was not designed or published for third-party use. It may break at
+any time if Liberty Rider changes their API, without notice. Use it at your
+own risk, against your own account, in accordance with Liberty Rider's own
+Terms of Service.
 
 ## License
 
