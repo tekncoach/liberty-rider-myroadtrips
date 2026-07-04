@@ -433,6 +433,23 @@ def _attach_tags_bulk(conn, rides: list[dict]) -> None:
         r["tags"] = by_ride[r["id"]]
 
 
+def _attach_col_names_bulk(conn, rides: list[dict]) -> None:
+    """Sets `col_names` on each ride dict in place — searchable col names
+    discovered so far (see api_ride_cols), empty for a ride never opened."""
+    by_ride: dict[str, list[str]] = {r["id"]: [] for r in rides}
+    if not by_ride:
+        return
+    placeholders = ",".join("?" * len(by_ride))
+    rows = conn.execute(
+        f"SELECT ride_id, name FROM ride_cols WHERE ride_id IN ({placeholders})",
+        list(by_ride.keys()),
+    ).fetchall()
+    for row in rows:
+        by_ride[row["ride_id"]].append(row["name"])
+    for r in rides:
+        r["col_names"] = by_ride[r["id"]]
+
+
 def add_suggestions(rides: list[dict]) -> None:
     """Flag ungrouped rides adjacent to their chronological neighbor among other
     ungrouped rides — a hint for manual grouping, never an automatic assignment.
@@ -669,6 +686,7 @@ def api_list_rides(grouped: bool | None = None, user=Depends(get_session_user)):
             ).fetchall()
         rides = [_merged_ride_dict(conn, r) for r in rows]
         _attach_tags_bulk(conn, rides)
+        _attach_col_names_bulk(conn, rides)
         add_suggestions(rides)
         return rides
     finally:
@@ -801,6 +819,17 @@ def api_ride_cols(ride_id: str, user=Depends(get_session_user)):
                     "lat": lat,
                     "lon": lon,
                 })
+
+        # Persisted so these names become searchable (see api_list_rides) —
+        # progressively, only for rides whose detail has actually been
+        # opened, not backfilled for the whole history at once.
+        conn.execute("DELETE FROM ride_cols WHERE ride_id = ?", (ride_id,))
+        conn.executemany(
+            "INSERT INTO ride_cols (ride_id, name) VALUES (?, ?)",
+            [(ride_id, c["name"]) for c in cols],
+        )
+        conn.commit()
+
         return {"cols": cols}
     finally:
         conn.close()

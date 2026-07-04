@@ -104,6 +104,17 @@ CREATE TABLE IF NOT EXISTS mountain_pass_cache (
   PRIMARY KEY (lat, lon)
 );
 
+-- Named cols/summits found along a given ride (see api_ride_cols), so they
+-- become searchable — filled in progressively, the first time each ride's
+-- detail is opened, not backfilled for the whole history at once (an
+-- eager backfill would mean hundreds of Overpass calls against a free,
+-- rate-limited public API).
+CREATE TABLE IF NOT EXISTS ride_cols (
+  ride_id TEXT REFERENCES rides(id),
+  name TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ride_cols_ride ON ride_cols(ride_id);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   user_id TEXT REFERENCES users(id),
   key TEXT NOT NULL,
