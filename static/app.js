@@ -115,6 +115,7 @@ async function enterApp(firstName, isAdmin) {
   switchTab(state.tab);
   await refresh();
   refreshProfile();
+  if (!localStorage.getItem("onboardingTourDone")) startOnboardingTour();
 }
 
 function setProfileGreeting(firstName) {
@@ -1208,3 +1209,115 @@ async function renderElevationChart(rideId) {
   // else: leave #authScreen showing, #app stays hidden — no data is ever
   // fetched before a session is confirmed.
 })();
+
+// --- onboarding tour ---
+// A short, skippable walkthrough of the main features, shown once per
+// browser (localStorage flag) after the first login, and replayable from
+// the user menu. Steps referencing "ungrouped" switch tabs themselves so
+// their target exists; a step whose target isn't in the DOM (e.g. no ride
+// synced yet) falls back to a centered tooltip instead of being skipped,
+// since the explanatory text still stands on its own.
+const ONBOARDING_TOUR_STEPS = [
+  {
+    target: "#tabs",
+    title: "Trois façons de voir tes trajets",
+    text: "Mes traces, c'est ta liste complète et brute de trajets — le point de départ avant de les ranger en Roadtrips ou Tags. Roadtrips relie plusieurs trajets d'un même voyage (plusieurs étapes, plusieurs jours) en une seule vue d'ensemble. Tags rassemble des trajets sans lien de voyage sur une même carte, par thème ou zone — par exemple \"Paris\" ou \"Chevreuse\".",
+  },
+  {
+    target: "#syncBtn",
+    title: "Synchroniser",
+    text: "Récupère les trajets les plus récents depuis Liberty Rider. Le menu ⋯ à côté propose une resynchronisation complète de tout l'historique.",
+  },
+  {
+    tab: "ungrouped",
+    target: "#rideSearchInput",
+    title: "Retrouver un trajet",
+    text: "Recherche par titre, par note personnelle, ou même par le nom d'un col traversé — utile pour retrouver un trajet d'il y a longtemps.",
+  },
+  {
+    tab: "ungrouped",
+    target: "#selectionbar",
+    title: "Regrouper des trajets",
+    text: "Coche plusieurs trajets pour les rassembler en roadtrip, ou pour fusionner une trace coupée en deux par un bug de tracking.",
+  },
+  {
+    tab: "ungrouped",
+    target: ".ride-row",
+    title: "Le détail d'un trajet",
+    text: "Clique un trajet pour voir sa chronologie, son profil d'altitude avec les cols nommés, et sa trace sur la carte.",
+  },
+];
+
+let tourStepIndex = 0;
+
+function startOnboardingTour() {
+  tourStepIndex = 0;
+  document.getElementById("tourOverlay").style.display = "block";
+  showTourStep();
+}
+
+function endOnboardingTour() {
+  document.getElementById("tourOverlay").style.display = "none";
+  localStorage.setItem("onboardingTourDone", "1");
+}
+
+function showTourStep() {
+  const step = ONBOARDING_TOUR_STEPS[tourStepIndex];
+  if (!step) {
+    endOnboardingTour();
+    return;
+  }
+  if (step.tab) switchTab(step.tab);
+  requestAnimationFrame(() => positionTourStep(step));
+}
+
+function positionTourStep(step) {
+  const spotlight = document.getElementById("tourSpotlight");
+  const tooltip = document.getElementById("tourTooltip");
+  const el = step.target ? document.querySelector(step.target) : null;
+
+  document.getElementById("tourStepTitle").textContent = step.title;
+  document.getElementById("tourStepText").textContent = step.text;
+  document.getElementById("tourStepCounter").textContent = `${tourStepIndex + 1}/${ONBOARDING_TOUR_STEPS.length}`;
+  document.getElementById("tourPrevBtn").style.visibility = tourStepIndex === 0 ? "hidden" : "visible";
+  document.getElementById("tourNextBtn").textContent =
+    tourStepIndex === ONBOARDING_TOUR_STEPS.length - 1 ? "Terminer" : "Suivant";
+
+  if (el) {
+    const r = el.getBoundingClientRect();
+    spotlight.style.display = "block";
+    spotlight.style.left = r.left - 6 + "px";
+    spotlight.style.top = r.top - 6 + "px";
+    spotlight.style.width = r.width + 12 + "px";
+    spotlight.style.height = r.height + 12 + "px";
+
+    tooltip.style.transform = "none";
+    const tooltipWidth = 300;
+    const spaceBelow = window.innerHeight - r.bottom;
+    const top = spaceBelow > 180 ? r.bottom + 12 : Math.max(12, r.top - 12 - 160);
+    tooltip.style.top = top + "px";
+    tooltip.style.left = Math.min(Math.max(12, r.left), window.innerWidth - tooltipWidth - 12) + "px";
+  } else {
+    spotlight.style.display = "none";
+    tooltip.style.top = "45%";
+    tooltip.style.left = "50%";
+    tooltip.style.transform = "translate(-50%, -50%)";
+  }
+}
+
+document.getElementById("tourNextBtn").addEventListener("click", () => {
+  tourStepIndex++;
+  showTourStep();
+});
+document.getElementById("tourPrevBtn").addEventListener("click", () => {
+  if (tourStepIndex > 0) {
+    tourStepIndex--;
+    showTourStep();
+  }
+});
+document.getElementById("tourSkipBtn").addEventListener("click", endOnboardingTour);
+
+document.getElementById("replayTourBtn")?.addEventListener("click", () => {
+  document.getElementById("userMenu").classList.remove("open");
+  startOnboardingTour();
+});

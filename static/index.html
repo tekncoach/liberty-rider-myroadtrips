@@ -253,6 +253,23 @@
   .onboarding-cta p { margin: 0; font-size: 14px; }
   .onboarding-cta button { font-size: 14px; padding: 10px 20px; }
 
+  #tourOverlay { display: none; position: fixed; inset: 0; z-index: 1000; }
+  #tourSpotlight {
+    position: fixed; display: none; border-radius: 8px; pointer-events: none; z-index: 1001;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55); transition: top 0.25s ease, left 0.25s ease, width 0.25s ease, height 0.25s ease;
+  }
+  #tourTooltip {
+    position: fixed; z-index: 1002; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: var(--shadow); padding: 16px; width: 300px;
+  }
+  #tourTooltip h3 { margin: 0 0 6px; font-size: 14px; }
+  #tourTooltip p { margin: 0 0 14px; font-size: 13px; color: var(--muted); line-height: 1.4; }
+  .tour-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  #tourStepCounter { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .tour-buttons { display: flex; gap: 8px; align-items: center; }
+  .tour-btn-text { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; padding: 4px; }
+  .tour-btn-text:hover { color: var(--text); }
+
   #rideModalBackdrop {
     display: none; position: fixed; inset: 0; background: #00000066; z-index: 2000;
     align-items: center; justify-content: center;
@@ -412,6 +429,10 @@
             <span class="menu-title">Resynchroniser tout l'historique</span>
             <span class="menu-sub">Re-télécharge tous tes trajets depuis le début, pas juste les nouveaux — utile si des données semblent manquantes ou incorrectes</span>
           </button>
+          <button id="replayTourBtn">
+            <span class="menu-title">Revoir la visite guidée</span>
+            <span class="menu-sub">Un rapide rappel des fonctionnalités principales</span>
+          </button>
           <button id="purgeDataBtn" class="menu-danger">
             <span class="menu-title">Purger toutes mes données</span>
             <span class="menu-sub">Supprime tous les trajets/roadtrips/tags synchronisés localement — utile pour retester l'onboarding depuis zéro. Ton compte Liberty Rider n'est pas touché.</span>
@@ -451,6 +472,22 @@
     </div>
     <div id="rideModalMerge"></div>
     <div id="rideModalMap"></div>
+  </div>
+</div>
+
+<div id="tourOverlay">
+  <div id="tourSpotlight"></div>
+  <div id="tourTooltip">
+    <h3 id="tourStepTitle"></h3>
+    <p id="tourStepText"></p>
+    <div class="tour-footer">
+      <span id="tourStepCounter"></span>
+      <div class="tour-buttons">
+        <button id="tourSkipBtn" class="tour-btn-text">Passer</button>
+        <button id="tourPrevBtn" class="tour-btn-text">← Précédent</button>
+        <button id="tourNextBtn" class="primary">Suivant</button>
+      </div>
+    </div>
   </div>
 </div>
 
