@@ -4,6 +4,12 @@ const MONTHS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juill
 const VALID_TABS = ["ungrouped", "trips", "tags"];
 const savedTab = localStorage.getItem("activeTab");
 
+// Shared between showTripDetail/showTagDetail: only the most recently
+// clicked roadtrip/tag should ever get to render into #main. Without this,
+// clicking B while A's fetch is still in flight can let A's response win
+// the race and overwrite B's already-rendered detail.
+let latestDetailRequest = 0;
+
 const state = {
   // "Mes traces" first: right after a first sync this is the only tab with
   // anything in it (roadtrips/tags are manual organization, done later).
@@ -685,8 +691,19 @@ function renderRideModalMerge(ride) {
 
 // --- roadtrip detail ---
 async function showTripDetail(id) {
-  const trip = await api(`/api/roadtrips/${id}`);
+  const requestId = ++latestDetailRequest;
   const main = document.getElementById("main");
+  main.innerHTML = '<div id="empty" class="loading-section">Chargement…</div>';
+
+  let trip;
+  try {
+    trip = await api(`/api/roadtrips/${id}`);
+  } catch (e) {
+    if (requestId === latestDetailRequest) main.innerHTML = `<div id="empty">Erreur : ${e.message}</div>`;
+    return;
+  }
+  if (requestId !== latestDetailRequest) return; // a newer click already superseded this one
+
   main.innerHTML = `
     <div id="detailhead">
       <h2 contenteditable="true" id="tripName">${escapeHtml(trip.name)}</h2>
@@ -734,8 +751,19 @@ async function showTripDetail(id) {
 
 // --- tag detail (same map/day-list rendering as a roadtrip, no period notion) ---
 async function showTagDetail(id) {
-  const tag = await api(`/api/tags/${id}`);
+  const requestId = ++latestDetailRequest;
   const main = document.getElementById("main");
+  main.innerHTML = '<div id="empty" class="loading-section">Chargement…</div>';
+
+  let tag;
+  try {
+    tag = await api(`/api/tags/${id}`);
+  } catch (e) {
+    if (requestId === latestDetailRequest) main.innerHTML = `<div id="empty">Erreur : ${e.message}</div>`;
+    return;
+  }
+  if (requestId !== latestDetailRequest) return; // a newer click already superseded this one
+
   main.innerHTML = `
     <div id="detailhead">
       <h2 contenteditable="true" id="tagName">🏷️ ${escapeHtml(tag.name)}</h2>
