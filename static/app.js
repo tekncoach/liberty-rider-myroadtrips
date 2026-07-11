@@ -26,6 +26,10 @@ const state = {
   rideSearch: "",
   collapsedYears: new Set(),
   collapsedTripYears: new Set(),
+  // False until the first /api/roadtrips+/api/rides+/api/tags round-trip
+  // resolves — lets renderList() show a loading state instead of a
+  // misleading "empty" one while that initial fetch is still in flight.
+  dataLoaded: false,
 };
 
 async function api(path, opts) {
@@ -242,6 +246,7 @@ async function refresh() {
   state.roadtrips = await api("/api/roadtrips");
   state.ungrouped = await api("/api/rides");
   state.tags = await api("/api/tags");
+  state.dataLoaded = true;
   renderList();
   if (state.activeEntityKind === "trip" && state.activeTripId) showTripDetail(state.activeTripId);
   else if (state.activeEntityKind === "tag" && state.activeTagId) showTagDetail(state.activeTagId);
@@ -269,6 +274,11 @@ function renderMainEmptyState() {
 function renderList() {
   const wrap = document.getElementById("listwrap");
   wrap.innerHTML = "";
+  if (!state.dataLoaded) {
+    wrap.innerHTML = '<div class="section loading-section">Chargement…</div>';
+    updateSelectionBar();
+    return;
+  }
   if (state.tab === "trips") {
     if (!state.roadtrips.length) {
       wrap.innerHTML = '<div class="section">Aucun roadtrip pour l\'instant.</div>';
