@@ -5,9 +5,27 @@ but targets `currentUser.stoppedRides` instead.
 """
 from __future__ import annotations
 
+import time
+
 import requests
 
 API_URL = "https://api.liberty-rider.com/graphql"
+
+# Liberty Rider's API occasionally 502s on heavy queries (a page of many
+# rides with full detailedPolyline) — retried a few times with backoff
+# before giving up, since a retry a second later routinely succeeds.
+RETRYABLE_STATUSES = {502, 503, 504}
+MAX_RETRIES = 3
+RETRY_BACKOFF_S = 2
+
+
+def _post_with_retry(session: requests.Session, url: str, json: dict, timeout: int):
+    for attempt in range(MAX_RETRIES + 1):
+        resp = session.post(url, json=json, timeout=timeout)
+        if resp.status_code not in RETRYABLE_STATUSES or attempt == MAX_RETRIES:
+            resp.raise_for_status()
+            return resp
+        time.sleep(RETRY_BACKOFF_S * (2 ** attempt))
 
 STOPPED_RIDES_QUERY = """
 query MyRides($first: Int, $after: DateTime, $before: DateTime, $onlyFavorites: Boolean) {
@@ -98,8 +116,7 @@ class LibertyRiderClient:
             },
             "query": STOPPED_RIDES_QUERY,
         }
-        resp = self.session.post(API_URL, json=payload, timeout=30)
-        resp.raise_for_status()
+        resp = _post_with_retry(self.session, API_URL, payload, timeout=30)
         data = resp.json()
         if data.get("data") is None:
             raise RuntimeError(f"GraphQL error: {data.get('errors')}")
@@ -112,8 +129,7 @@ class LibertyRiderClient:
     def get_current_user(self) -> dict:
         for query in (CURRENT_USER_QUERY, CURRENT_USER_QUERY_MINIMAL):
             payload = {"operationName": "CurrentUser", "query": query}
-            resp = self.session.post(API_URL, json=payload, timeout=15)
-            resp.raise_for_status()
+            resp = _post_with_retry(self.session, API_URL, payload, timeout=15)
             data = resp.json()
             if data.get("data") is not None:
                 return data["data"]["currentUser"]
