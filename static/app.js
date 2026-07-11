@@ -1,11 +1,13 @@
 const COLORS = ["#e0552b", "#2b7de0", "#2ba85a", "#a02be0", "#e0b02b", "#2bd0d0", "#e02b6a", "#7a8a2b"];
 const MONTHS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
 
-const VALID_TABS = ["trips", "tags", "ungrouped"];
+const VALID_TABS = ["ungrouped", "trips", "tags"];
 const savedTab = localStorage.getItem("activeTab");
 
 const state = {
-  tab: VALID_TABS.includes(savedTab) ? savedTab : "trips",
+  // "Mes traces" first: right after a first sync this is the only tab with
+  // anything in it (roadtrips/tags are manual organization, done later).
+  tab: VALID_TABS.includes(savedTab) ? savedTab : "ungrouped",
   roadtrips: [],
   ungrouped: [],
   tags: [],
