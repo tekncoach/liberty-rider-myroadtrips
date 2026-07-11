@@ -1,12 +1,17 @@
-# Liberty Rider — Mes trajets
+# Carnet de Route
 
 A self-hosted, multi-user tool for organizing your personal ride history
 from the [Liberty Rider](https://liberty-rider.com/) motorcycle app. Liberty
 Rider's own web app only shows "roadbooks" you've explicitly published — it
-has no view of your raw ride history ("Mes trajets" / stopped rides). This
+has no view of your raw ride history — the "Trajets" tab in the mobile
+app, your own stopped rides. This
 tool syncs that history into a database and gives you a map-based UI to
 group rides into multi-day roadtrips, tag them by geographic zone, and
 clean up tracking artifacts like a single ride getting split in two.
+
+Independent, unofficial project — not affiliated with, endorsed by, or
+sponsored by Liberty Rider. "Liberty Rider" is a trademark of its own
+owners.
 
 Each account is scoped to its own data — logging in with your Liberty Rider
 email/password only ever shows *your* rides, never anyone else's, whether

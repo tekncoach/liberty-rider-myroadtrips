@@ -1,4 +1,5 @@
-"""FastAPI backend for the "Mes trajets" personal roadtrip organizer.
+"""FastAPI backend for "Carnet de Route", a personal roadtrip organizer
+that syncs ride history from a Liberty Rider account.
 
 Multi-tenant: every request that touches ride/roadtrip/tag data requires a
 valid session (see `get_session_user`), and every query is scoped to that
@@ -48,7 +49,7 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"
 # re-test onboarding) — not a feature end users are meant to see or use.
 ADMIN_USER_IDS = {u.strip() for u in os.environ.get("ADMIN_USER_IDS", "").split(",") if u.strip()}
 
-app = FastAPI(title="Mes trajets — Liberty Rider")
+app = FastAPI(title="Carnet de Route (Liberty Rider sync)")
 db.init_db()
 
 
