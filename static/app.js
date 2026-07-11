@@ -129,11 +129,22 @@ async function refreshProfile() {
       document.getElementById("userAvatar").textContent = profile.first_name.charAt(0).toUpperCase();
       document.getElementById("userName").textContent = profile.first_name;
     }
-    document.getElementById("userSub").textContent =
-      `${profile.manual_ride_count ?? "?"} trajets Liberty Rider`;
+    document.getElementById("userSub").textContent = profileSubText(profile);
   } catch (e) {
     // Non-fatal — the greeting set at login is still shown.
   }
+}
+
+// manual_ride_count's exact definition on Liberty Rider's side isn't
+// confirmed to match stoppedRides 1:1 (see docs/API.md) — so the diff is
+// shown as an approximation ("≈"), not asserted as an exact pending count.
+function profileSubText(profile) {
+  const remote = profile.manual_ride_count;
+  const local = state.ungrouped.length;
+  if (remote == null) return `${local} trajet(s) synchronisé(s)`;
+  const diff = remote - local;
+  if (diff > 0) return `${remote} trajets Liberty Rider · ≈${diff} à synchroniser`;
+  return `${remote} trajets Liberty Rider · à jour`;
 }
 
 // --- sync ---
@@ -154,6 +165,7 @@ document.getElementById("purgeDataBtn").addEventListener("click", async () => {
     await api("/api/account/data", { method: "DELETE" });
     statusEl.textContent = "Données locales purgées.";
     await refresh();
+    refreshProfile();
   } catch (e) {
     statusEl.textContent = "Erreur : " + e.message;
   }
@@ -168,6 +180,7 @@ async function doSync(full) {
     const summary = await api("/api/sync", { method: "POST", body: JSON.stringify({ full }) });
     statusEl.textContent = `${summary.upserted} nouveau(x) / ${summary.total_rides} au total.`;
     await refresh();
+    refreshProfile();
   } catch (e) {
     statusEl.textContent = "Erreur : " + e.message;
   } finally {
@@ -229,6 +242,25 @@ async function refresh() {
   renderList();
   if (state.activeEntityKind === "trip" && state.activeTripId) showTripDetail(state.activeTripId);
   else if (state.activeEntityKind === "tag" && state.activeTagId) showTagDetail(state.activeTagId);
+  else renderMainEmptyState();
+}
+
+// First-run state (nothing synced yet) gets a clear call to action instead
+// of the generic "pick something on the left" placeholder.
+function renderMainEmptyState() {
+  const main = document.getElementById("main");
+  if (state.ungrouped.length === 0) {
+    main.innerHTML = `
+      <div id="empty">
+        <div class="onboarding-cta">
+          <p>Aucun trajet synchronisé pour l'instant.</p>
+          <button id="firstSyncBtn" class="primary">⟳ Synchroniser mes trajets Liberty Rider</button>
+        </div>
+      </div>`;
+    document.getElementById("firstSyncBtn").addEventListener("click", () => doSync(false));
+  } else {
+    main.innerHTML = '<div id="empty">Sélectionne un roadtrip ou un tag, ou regroupe des trajets depuis l\'onglet « Mes traces ».</div>';
+  }
 }
 
 function renderList() {
