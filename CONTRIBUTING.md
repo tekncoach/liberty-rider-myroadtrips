@@ -30,6 +30,9 @@ Copy `.env.example` to `.env` if you need to override `COOKIE_SECURE` or
 - `app.py` — FastAPI routes and session/auth handling.
 - `db.py` — schema + queries, no ORM. SQLite locally by default; Postgres
   (via `psycopg`) when `DATABASE_URL` is set — see the module docstring.
+- `migrations/*.sql` — Postgres-only schema migrations, applied in
+  filename order (see `docs/ARCHITECTURE.md`). Add a new numbered file for
+  a schema change; never edit one that's already been applied anywhere.
 - `sync.py`, `liberty_client.py`, `firebase_refresh.py` — talking to the
   Liberty Rider GraphQL API and Firebase auth.
 - `elevation.py`, `mountain_pass.py` — the two external, free/keyless APIs

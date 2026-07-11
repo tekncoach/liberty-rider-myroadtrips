@@ -119,12 +119,24 @@ the user as an error during normal use.
 - **`elevation_cache`** / **`mountain_pass_cache`** / **`ride_cols`** — see
   **Elevation profile & named cols** below.
 
-### Migrations
+### Migrations (Postgres)
 
-SQLite-only — a fresh Postgres database is created straight from
-`SCHEMA_POSTGRES`, with none of this history to replay (see `db.py`'s
-module docstring). This whole section only matters if you're running
-against a local/self-hosted SQLite file.
+Plain `.sql` files in `migrations/`, applied in filename order by
+`db._run_postgres_migrations()` and tracked in a `schema_migrations`
+table (one row per applied filename) so each one only ever runs once per
+database. To change the schema later, add a new `NNNN_description.sql`
+file — don't edit an already-applied one, since it won't be re-run
+against databases that already applied it. RLS is enabled (no policies —
+deny-all) on every table as it's created, including `schema_migrations`
+itself, since Supabase's `public` schema is reachable through its Data
+API by default (see the Supabase `supabase` skill's security checklist);
+the app connects as the table owner, which bypasses RLS.
+
+### Migrations (SQLite)
+
+This section is SQLite-only — unrelated to the Postgres mechanism above,
+and only matters if you're running against a local/self-hosted SQLite
+file.
 
 `db.init_db()` runs a handful of one-shot migration functions
 (`_migrate_users_table`, `_migrate_tags_table`, `_migrate_sync_state_table`)

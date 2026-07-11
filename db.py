@@ -9,10 +9,11 @@ Two backends, picked by the presence of a `DATABASE_URL` env var:
 - Unset (local dev, tests): a single-file SQLite database at `DB_PATH`. Runs
   the historical ALTER-TABLE/RENAME migrations below, since this file may
   have been created by an earlier version of the schema.
-- Set (hosted deployments): Postgres via `psycopg`. Always a fresh database
-  per deployment (no import path from an existing SQLite file — see
-  `docs/ARCHITECTURE.md`), so it's created straight from `SCHEMA_POSTGRES`
-  with no migration history to replay.
+- Set (hosted deployments): Postgres via `psycopg`. Schema comes from the
+  plain-SQL files in `migrations/`, applied in filename order and tracked
+  in a `schema_migrations` table — see `_run_postgres_migrations` below.
+  Add a new `NNNN_description.sql` file for future schema changes; nothing
+  here replays SQLite's own ALTER-TABLE history (see `docs/ARCHITECTURE.md`).
 
 Application code (`app.py`, `sync.py`, `elevation.py`, `mountain_pass.py`)
 is written once against both: SQL uses `?` placeholders and `conn.execute(
@@ -31,6 +32,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 DB_PATH = pathlib.Path(__file__).parent / "data" / "rides.db"
+MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 IS_POSTGRES = bool(DATABASE_URL)
@@ -175,125 +177,7 @@ CREATE INDEX IF NOT EXISTS idx_rides_merged_into ON rides(merged_into);
 CREATE INDEX IF NOT EXISTS idx_rides_user ON rides(user_id);
 """
 
-# Standalone target schema for a fresh Postgres database — no ALTER-TABLE
-# history to replay (see the module docstring). Kept as one complete block
-# rather than reusing SCHEMA/POST_MIGRATION_INDEXES verbatim, since the two
-# dialects disagree on autoincrement PKs and `tags` only ever existed as a
-# migration-built table on the SQLite side.
-SCHEMA_POSTGRES = """
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  first_name TEXT,
-  email TEXT,
-  bearer_token TEXT,
-  refresh_token TEXT,
-  firebase_api_key TEXT,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS sessions (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS roadtrips (
-  id SERIAL PRIMARY KEY,
-  user_id TEXT REFERENCES users(id),
-  name TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS rides (
-  id TEXT PRIMARY KEY,
-  user_id TEXT REFERENCES users(id),
-  name TEXT,
-  start_time TEXT NOT NULL,
-  distance DOUBLE PRECISION,
-  duration DOUBLE PRECISION,
-  duration_without_pauses DOUBLE PRECISION,
-  total_pauses_duration DOUBLE PRECISION,
-  pause_count INTEGER,
-  maximum_altitude DOUBLE PRECISION,
-  is_favorite INTEGER,
-  hidden INTEGER,
-  state TEXT,
-  detailed_polyline TEXT,
-  preview_picture_url TEXT,
-  gpx_export_url TEXT,
-  gpx_local_path TEXT,
-  start_lat DOUBLE PRECISION, start_lon DOUBLE PRECISION,
-  stop_lat DOUBLE PRECISION, stop_lon DOUBLE PRECISION,
-  vehicle_brand TEXT, vehicle_model TEXT, vehicle_type TEXT, vehicle_cc DOUBLE PRECISION,
-  created_roadbook_id TEXT,
-  roadtrip_id INTEGER REFERENCES roadtrips(id),
-  merged_into TEXT REFERENCES rides(id),
-  notes TEXT,
-  raw_json TEXT
-);
-
-CREATE TABLE IF NOT EXISTS pauses (
-  ride_id TEXT REFERENCES rides(id),
-  estimated_time TEXT,
-  automatic INTEGER,
-  lat DOUBLE PRECISION, lon DOUBLE PRECISION
-);
-
-CREATE TABLE IF NOT EXISTS resumes (
-  ride_id TEXT REFERENCES rides(id),
-  estimated_time TEXT,
-  automatic INTEGER,
-  lat DOUBLE PRECISION, lon DOUBLE PRECISION
-);
-
-CREATE TABLE IF NOT EXISTS elevation_cache (
-  lat DOUBLE PRECISION NOT NULL,
-  lon DOUBLE PRECISION NOT NULL,
-  elevation DOUBLE PRECISION NOT NULL,
-  PRIMARY KEY (lat, lon)
-);
-
-CREATE TABLE IF NOT EXISTS mountain_pass_cache (
-  lat DOUBLE PRECISION NOT NULL,
-  lon DOUBLE PRECISION NOT NULL,
-  name TEXT,
-  PRIMARY KEY (lat, lon)
-);
-
-CREATE TABLE IF NOT EXISTS ride_cols (
-  ride_id TEXT REFERENCES rides(id),
-  name TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_ride_cols_ride ON ride_cols(ride_id);
-
-CREATE TABLE IF NOT EXISTS sync_state (
-  user_id TEXT REFERENCES users(id),
-  key TEXT NOT NULL,
-  value TEXT,
-  PRIMARY KEY (user_id, key)
-);
-
-CREATE TABLE IF NOT EXISTS tags (
-  id SERIAL PRIMARY KEY,
-  user_id TEXT REFERENCES users(id),
-  name TEXT NOT NULL,
-  UNIQUE(user_id, name)
-);
-
-CREATE TABLE IF NOT EXISTS ride_tags (
-  ride_id TEXT REFERENCES rides(id),
-  tag_id INTEGER REFERENCES tags(id),
-  PRIMARY KEY (ride_id, tag_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_rides_start_time ON rides(start_time);
-CREATE INDEX IF NOT EXISTS idx_rides_roadtrip ON rides(roadtrip_id);
-CREATE INDEX IF NOT EXISTS idx_rides_merged_into ON rides(merged_into);
-CREATE INDEX IF NOT EXISTS idx_rides_user ON rides(user_id);
-CREATE INDEX IF NOT EXISTS idx_pauses_ride ON pauses(ride_id);
-CREATE INDEX IF NOT EXISTS idx_resumes_ride ON resumes(ride_id);
-CREATE INDEX IF NOT EXISTS idx_ride_tags_tag ON ride_tags(tag_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-"""
+# Postgres schema lives in migrations/*.sql, applied by _run_postgres_migrations().
 
 
 class _PGCursor:
@@ -374,10 +258,7 @@ def init_db() -> None:
     conn = connect()
     try:
         if IS_POSTGRES:
-            # Fresh database only — no ALTER-TABLE history to replay and
-            # nothing to backfill (see the module docstring).
-            conn.executescript(SCHEMA_POSTGRES)
-            conn.commit()
+            _run_postgres_migrations(conn)
             return
 
         conn.executescript(SCHEMA)
@@ -407,6 +288,33 @@ def init_db() -> None:
         _backfill_resumes_from_raw_json(conn)
     finally:
         conn.close()
+
+
+def _run_postgres_migrations(conn: DBConnection) -> None:
+    """Applies every `migrations/*.sql` file not yet recorded in
+    `schema_migrations`, in filename order (hence the `NNNN_` prefix — sort
+    order is the apply order). Add a new numbered file for future schema
+    changes; each one only ever runs once per database, tracked here."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version TEXT PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        )
+    """)
+    # Not covered by any migrations/*.sql file (it's created here, before
+    # any of them run) — deny-all by default, same as every other table.
+    conn.execute("ALTER TABLE schema_migrations ENABLE ROW LEVEL SECURITY")
+    conn.commit()
+    applied = {row["version"] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if path.name in applied:
+            continue
+        conn.executescript(path.read_text())
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (path.name, _now()),
+        )
+        conn.commit()
 
 
 def _table_exists(conn: DBConnection, name: str) -> bool:
