@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+from contextlib import asynccontextmanager
 from datetime import timedelta
 
 import gpxpy
@@ -49,7 +50,18 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"
 # re-test onboarding) — not a feature end users are meant to see or use.
 ADMIN_USER_IDS = {u.strip() for u in os.environ.get("ADMIN_USER_IDS", "").split(",") if u.strip()}
 
-app = FastAPI(title="Carnet de Route (Liberty Rider sync)")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Not `yield`ed to for TestClient(app) used without a `with` block
+    # (every test fixture here) — db.init_db() below still runs eagerly
+    # at import time so tests are unaffected; this only handles a clean
+    # pool shutdown for the real server process.
+    yield
+    if db.IS_POSTGRES:
+        db._POOL.close()
+
+
+app = FastAPI(title="Carnet de Route (Liberty Rider sync)", lifespan=_lifespan)
 db.init_db()
 
 

@@ -40,6 +40,14 @@ IS_POSTGRES = bool(DATABASE_URL)
 if IS_POSTGRES:
     import psycopg
     from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+
+    # Every request opened (and closed) its own connection — fine on
+    # SQLite, expensive on Postgres behind a pooler (Supabase's Supavisor,
+    # e.g.), where each fresh connection pays a full TCP+TLS+auth
+    # handshake through an extra network hop. A small persistent pool
+    # amortizes that cost across requests instead of paying it every time.
+    _POOL = ConnectionPool(DATABASE_URL, kwargs={"row_factory": dict_row}, min_size=1, max_size=5)
 
 
 def _now() -> str:
@@ -204,10 +212,20 @@ class _PGCursor:
 class PGConnection:
     """A `sqlite3.Connection`-shaped wrapper around a psycopg connection —
     see the module docstring for why this is the only Postgres-specific
-    piece application code needs to know about."""
+    piece application code needs to know about.
 
-    def __init__(self, url: str):
-        self._conn = psycopg.connect(url, row_factory=dict_row, autocommit=False)
+    Pass `url` for a plain one-off connection (used by one-off scripts,
+    e.g. `scripts/migrate_sqlite_to_postgres.py`) that `close()`s for
+    real. `connect()` below instead pulls an already-open connection from
+    `_POOL` and returns it there on `close()`."""
+
+    def __init__(self, url: str | None = None, _pooled_conn=None):
+        if _pooled_conn is not None:
+            self._conn = _pooled_conn
+            self._pooled = True
+        else:
+            self._conn = psycopg.connect(url, row_factory=dict_row, autocommit=False)
+            self._pooled = False
 
     @staticmethod
     def _translate(sql: str) -> str:
@@ -231,7 +249,15 @@ class PGConnection:
         self._conn.commit()
 
     def close(self) -> None:
-        self._conn.close()
+        if self._pooled:
+            # Rolls back anything left uncommitted before returning the
+            # connection to the pool, so a caller that forgot to commit
+            # (or errored before committing) never leaks a dangling
+            # transaction into the next request that reuses it.
+            self._conn.rollback()
+            _POOL.putconn(self._conn)
+        else:
+            self._conn.close()
 
 
 # What `connect()` actually returns, for type hints on every function below —
@@ -242,7 +268,7 @@ DBConnection = sqlite3.Connection | PGConnection
 
 def connect() -> DBConnection:
     if IS_POSTGRES:
-        return PGConnection(DATABASE_URL)
+        return PGConnection(_pooled_conn=_POOL.getconn())
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
