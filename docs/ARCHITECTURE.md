@@ -4,7 +4,7 @@ A small, dependency-light stack: no ORM, no build step, no framework on the
 frontend.
 
 ```
-liberty_client.py  →  sync.py  →  db.py (SQLite)  →  app.py (FastAPI)  →  static/ (vanilla JS + Leaflet)
+liberty_client.py  →  sync.py  →  db.py (SQLite or Postgres)  →  app.py (FastAPI)  →  static/ (vanilla JS + Leaflet)
 ```
 
 - **`liberty_client.py`** — minimal GraphQL client for Liberty Rider's
@@ -15,14 +15,21 @@ liberty_client.py  →  sync.py  →  db.py (SQLite)  →  app.py (FastAPI)  →
   `refresh_id_token` (used server-side to silently renew an expired session's
   Liberty Rider token without asking the user to log in again).
 - **`sync.py`** — walks the API's pagination to pull all-or-new rides and
-  upserts them into SQLite, scoped to one user.
-- **`db.py`** — schema + connection helper + `upsert_ride`. Raw `sqlite3`,
-  no ORM.
+  upserts them into the database, scoped to one user.
+- **`db.py`** — schema + connection helper + `upsert_ride`. No ORM; picks
+  SQLite (default, single file, no setup) or Postgres (via `psycopg`, when
+  `DATABASE_URL` is set — the shape hosted deployments use) at import time.
+  Application code writes one set of `?`-placeholder SQL against either
+  backend — see the module's docstring for how that translation works and
+  why the two schemas aren't byte-identical (Postgres has no
+  `AUTOINCREMENT`, and `REAL` means single-precision there, unlike SQLite's
+  always-8-byte `REAL` — silently wrong lat/lon lookups was a real bug this
+  caught).
 - **`app.py`** — FastAPI app: auth (login/logout/session), the HTTP API (see
   `API.md`), and serving `static/`.
 - **`static/index.html` + `static/app.js`** — single-page app, no build step.
   A single global `state` object is the source of truth; each tab
-  (Roadtrips / Tags / Mes traces) has its own render function that rebuilds
+  (Mes traces / Roadtrips / Tags) has its own render function that rebuilds
   its DOM subtree from `state` on every change. Leaflet renders the map.
   `#authScreen` (login form) and `#app` (the real UI) are mutually
   exclusive — the app never fetches or renders any ride data until
@@ -113,6 +120,11 @@ the user as an error during normal use.
   **Elevation profile & named cols** below.
 
 ### Migrations
+
+SQLite-only — a fresh Postgres database is created straight from
+`SCHEMA_POSTGRES`, with none of this history to replay (see `db.py`'s
+module docstring). This whole section only matters if you're running
+against a local/self-hosted SQLite file.
 
 `db.init_db()` runs a handful of one-shot migration functions
 (`_migrate_users_table`, `_migrate_tags_table`, `_migrate_sync_state_table`)

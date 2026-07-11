@@ -28,7 +28,8 @@ Copy `.env.example` to `.env` if you need to override `COOKIE_SECURE` or
 ## Where things live
 
 - `app.py` — FastAPI routes and session/auth handling.
-- `db.py` — SQLite schema + queries, plain `sqlite3`, no ORM.
+- `db.py` — schema + queries, no ORM. SQLite locally by default; Postgres
+  (via `psycopg`) when `DATABASE_URL` is set — see the module docstring.
 - `sync.py`, `liberty_client.py`, `firebase_refresh.py` — talking to the
   Liberty Rider GraphQL API and Firebase auth.
 - `elevation.py`, `mountain_pass.py` — the two external, free/keyless APIs
@@ -51,8 +52,9 @@ Copy `.env.example` to `.env` if you need to override `COOKIE_SECURE` or
   functions mostly don't have one unless the "why" isn't clear from the
   name and body (see the migration helpers in `db.py` for examples of
   when a docstring earns its place).
-- SQL is raw `sqlite3`, written by hand — no ORM. Keep new queries
-  consistent with that (parameterized, no string-built SQL).
+- SQL is written by hand — no ORM. Keep new queries consistent with that
+  (parameterized with `?`, no string-built SQL — `db.py` translates `?` to
+  Postgres's `%s` under the hood, so stick to `?` everywhere).
 - The frontend is intentionally framework-free vanilla JS/HTML/CSS. Don't
   introduce a build step or a frontend framework for a small feature.
 - Favor small, focused modules over adding more responsibilities to

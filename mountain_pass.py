@@ -75,7 +75,8 @@ def get_pass_name(conn, lat: float, lon: float, hint_elevation: float | None = N
 
     name = min(named, key=_score)["tags"]["name"] if named else None
     conn.execute(
-        "INSERT OR REPLACE INTO mountain_pass_cache (lat, lon, name) VALUES (?, ?, ?)",
+        "INSERT INTO mountain_pass_cache (lat, lon, name) VALUES (?, ?, ?) "
+        "ON CONFLICT(lat, lon) DO UPDATE SET name = excluded.name",
         (key_lat, key_lon, name),
     )
     conn.commit()

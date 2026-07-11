@@ -1045,9 +1045,10 @@ def api_create_roadtrip(req: CreateRoadtripRequest, user=Depends(get_session_use
     conn = db.connect()
     try:
         cur = conn.execute(
-            "INSERT INTO roadtrips (user_id, name) VALUES (?, ?)", (user["id"], req.name)
+            "INSERT INTO roadtrips (user_id, name) VALUES (?, ?) RETURNING id",
+            (user["id"], req.name),
         )
-        trip_id = cur.lastrowid
+        trip_id = cur.fetchone()["id"]
         if req.ride_ids:
             placeholders = ",".join("?" * len(req.ride_ids))
             conn.execute(

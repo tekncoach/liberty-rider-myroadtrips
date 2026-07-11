@@ -1,18 +1,50 @@
-"""SQLite storage for personal Liberty Rider rides + manual roadtrip grouping.
+"""Storage for personal Liberty Rider rides + manual roadtrip grouping.
 
 Multi-tenant: every ride/roadtrip/tag belongs to a `users` row, keyed
 directly by the user's own Liberty Rider id (`currentUser.id` — no separate
 internal id is minted). Every request is scoped to the logged-in session's
 user — see the `get_session_user` dependency in app.py.
+
+Two backends, picked by the presence of a `DATABASE_URL` env var:
+- Unset (local dev, tests): a single-file SQLite database at `DB_PATH`. Runs
+  the historical ALTER-TABLE/RENAME migrations below, since this file may
+  have been created by an earlier version of the schema.
+- Set (hosted deployments): Postgres via `psycopg`. Always a fresh database
+  per deployment (no import path from an existing SQLite file — see
+  `docs/ARCHITECTURE.md`), so it's created straight from `SCHEMA_POSTGRES`
+  with no migration history to replay.
+
+Application code (`app.py`, `sync.py`, `elevation.py`, `mountain_pass.py`)
+is written once against both: SQL uses `?` placeholders and `conn.execute(
+...).fetchone()/.fetchall()` throughout, and `PGConnection` below translates
+that onto psycopg for the Postgres case. Anything backend-specific (PRAGMA,
+sqlite_master, AUTOINCREMENT, the ALTER-TABLE migrations) stays confined to
+this module.
 """
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import secrets
 import sqlite3
+from datetime import datetime, timezone
 
 DB_PATH = pathlib.Path(__file__).parent / "data" / "rides.db"
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+IS_POSTGRES = bool(DATABASE_URL)
+
+if IS_POSTGRES:
+    import psycopg
+    from psycopg.rows import dict_row
+
+
+def _now() -> str:
+    """A portable stand-in for SQLite's `datetime('now')` — Postgres has no
+    such function, so the timestamp is computed here and bound as a plain
+    parameter instead of relying on server-side SQL."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -143,8 +175,190 @@ CREATE INDEX IF NOT EXISTS idx_rides_merged_into ON rides(merged_into);
 CREATE INDEX IF NOT EXISTS idx_rides_user ON rides(user_id);
 """
 
+# Standalone target schema for a fresh Postgres database — no ALTER-TABLE
+# history to replay (see the module docstring). Kept as one complete block
+# rather than reusing SCHEMA/POST_MIGRATION_INDEXES verbatim, since the two
+# dialects disagree on autoincrement PKs and `tags` only ever existed as a
+# migration-built table on the SQLite side.
+SCHEMA_POSTGRES = """
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  first_name TEXT,
+  email TEXT,
+  bearer_token TEXT,
+  refresh_token TEXT,
+  firebase_api_key TEXT,
+  created_at TEXT NOT NULL
+);
 
-def connect() -> sqlite3.Connection:
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS roadtrips (
+  id SERIAL PRIMARY KEY,
+  user_id TEXT REFERENCES users(id),
+  name TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rides (
+  id TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id),
+  name TEXT,
+  start_time TEXT NOT NULL,
+  distance DOUBLE PRECISION,
+  duration DOUBLE PRECISION,
+  duration_without_pauses DOUBLE PRECISION,
+  total_pauses_duration DOUBLE PRECISION,
+  pause_count INTEGER,
+  maximum_altitude DOUBLE PRECISION,
+  is_favorite INTEGER,
+  hidden INTEGER,
+  state TEXT,
+  detailed_polyline TEXT,
+  preview_picture_url TEXT,
+  gpx_export_url TEXT,
+  gpx_local_path TEXT,
+  start_lat DOUBLE PRECISION, start_lon DOUBLE PRECISION,
+  stop_lat DOUBLE PRECISION, stop_lon DOUBLE PRECISION,
+  vehicle_brand TEXT, vehicle_model TEXT, vehicle_type TEXT, vehicle_cc DOUBLE PRECISION,
+  created_roadbook_id TEXT,
+  roadtrip_id INTEGER REFERENCES roadtrips(id),
+  merged_into TEXT REFERENCES rides(id),
+  notes TEXT,
+  raw_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pauses (
+  ride_id TEXT REFERENCES rides(id),
+  estimated_time TEXT,
+  automatic INTEGER,
+  lat DOUBLE PRECISION, lon DOUBLE PRECISION
+);
+
+CREATE TABLE IF NOT EXISTS resumes (
+  ride_id TEXT REFERENCES rides(id),
+  estimated_time TEXT,
+  automatic INTEGER,
+  lat DOUBLE PRECISION, lon DOUBLE PRECISION
+);
+
+CREATE TABLE IF NOT EXISTS elevation_cache (
+  lat DOUBLE PRECISION NOT NULL,
+  lon DOUBLE PRECISION NOT NULL,
+  elevation DOUBLE PRECISION NOT NULL,
+  PRIMARY KEY (lat, lon)
+);
+
+CREATE TABLE IF NOT EXISTS mountain_pass_cache (
+  lat DOUBLE PRECISION NOT NULL,
+  lon DOUBLE PRECISION NOT NULL,
+  name TEXT,
+  PRIMARY KEY (lat, lon)
+);
+
+CREATE TABLE IF NOT EXISTS ride_cols (
+  ride_id TEXT REFERENCES rides(id),
+  name TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ride_cols_ride ON ride_cols(ride_id);
+
+CREATE TABLE IF NOT EXISTS sync_state (
+  user_id TEXT REFERENCES users(id),
+  key TEXT NOT NULL,
+  value TEXT,
+  PRIMARY KEY (user_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS tags (
+  id SERIAL PRIMARY KEY,
+  user_id TEXT REFERENCES users(id),
+  name TEXT NOT NULL,
+  UNIQUE(user_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS ride_tags (
+  ride_id TEXT REFERENCES rides(id),
+  tag_id INTEGER REFERENCES tags(id),
+  PRIMARY KEY (ride_id, tag_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rides_start_time ON rides(start_time);
+CREATE INDEX IF NOT EXISTS idx_rides_roadtrip ON rides(roadtrip_id);
+CREATE INDEX IF NOT EXISTS idx_rides_merged_into ON rides(merged_into);
+CREATE INDEX IF NOT EXISTS idx_rides_user ON rides(user_id);
+CREATE INDEX IF NOT EXISTS idx_pauses_ride ON pauses(ride_id);
+CREATE INDEX IF NOT EXISTS idx_resumes_ride ON resumes(ride_id);
+CREATE INDEX IF NOT EXISTS idx_ride_tags_tag ON ride_tags(tag_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+"""
+
+
+class _PGCursor:
+    """Wraps a psycopg cursor so call sites written for sqlite3 (`conn.execute(
+    sql, params).fetchone()`, bare iteration, `?` placeholders) work unchanged."""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+
+class PGConnection:
+    """A `sqlite3.Connection`-shaped wrapper around a psycopg connection —
+    see the module docstring for why this is the only Postgres-specific
+    piece application code needs to know about."""
+
+    def __init__(self, url: str):
+        self._conn = psycopg.connect(url, row_factory=dict_row, autocommit=False)
+
+    @staticmethod
+    def _translate(sql: str) -> str:
+        return sql.replace("?", "%s")
+
+    def execute(self, sql: str, params=()) -> _PGCursor:
+        cur = self._conn.cursor()
+        cur.execute(self._translate(sql), params)
+        return _PGCursor(cur)
+
+    def executemany(self, sql: str, seq_of_params) -> None:
+        cur = self._conn.cursor()
+        cur.executemany(self._translate(sql), list(seq_of_params))
+
+    def executescript(self, sql: str) -> None:
+        # psycopg (unlike sqlite3) executes a semicolon-separated batch fine
+        # via a plain .execute() — no separate "script" API needed.
+        self._conn.cursor().execute(sql)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+# What `connect()` actually returns, for type hints on every function below —
+# never `sqlite3.Connection` alone, since it's a `PGConnection` whenever
+# `DATABASE_URL` is set (see the module docstring).
+DBConnection = sqlite3.Connection | PGConnection
+
+
+def connect() -> DBConnection:
+    if IS_POSTGRES:
+        return PGConnection(DATABASE_URL)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -159,6 +373,13 @@ def connect() -> sqlite3.Connection:
 def init_db() -> None:
     conn = connect()
     try:
+        if IS_POSTGRES:
+            # Fresh database only — no ALTER-TABLE history to replay and
+            # nothing to backfill (see the module docstring).
+            conn.executescript(SCHEMA_POSTGRES)
+            conn.commit()
+            return
+
         conn.executescript(SCHEMA)
 
         _migrate_users_table(conn)
@@ -188,13 +409,13 @@ def init_db() -> None:
         conn.close()
 
 
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+def _table_exists(conn: DBConnection, name: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone() is not None
 
 
-def _migrate_users_table(conn: sqlite3.Connection) -> None:
+def _migrate_users_table(conn: DBConnection) -> None:
     """An early draft of this table used a surrogate autoincrement `id` with
     a separate `liberty_rider_id` column; the current design uses the
     Liberty Rider id directly as the primary key, plus `first_name`. Rebuild
@@ -218,7 +439,7 @@ def _migrate_users_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _finish_users_migration(conn: sqlite3.Connection) -> None:
+def _finish_users_migration(conn: DBConnection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
           id TEXT PRIMARY KEY,
@@ -240,7 +461,7 @@ def _finish_users_migration(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE users_old")
 
 
-def _migrate_tags_table(conn: sqlite3.Connection) -> None:
+def _migrate_tags_table(conn: DBConnection) -> None:
     """tags used to be a single global namespace (UNIQUE(name)); multi-tenancy
     needs UNIQUE(user_id, name) instead, which SQLite can't ALTER onto an
     existing table — rebuild it, preserving ids (ride_tags references them).
@@ -270,7 +491,7 @@ def _migrate_tags_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _finish_tags_migration(conn: sqlite3.Connection) -> None:
+def _finish_tags_migration(conn: DBConnection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tags (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -285,7 +506,7 @@ def _finish_tags_migration(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE tags_old")
 
 
-def _migrate_sync_state_table(conn: sqlite3.Connection) -> None:
+def _migrate_sync_state_table(conn: DBConnection) -> None:
     """sync_state used to be a single global key/value row; multi-tenancy
     needs it keyed per user."""
     exists = conn.execute(
@@ -311,7 +532,7 @@ def _migrate_sync_state_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _backfill_resumes_from_raw_json(conn: sqlite3.Connection) -> None:
+def _backfill_resumes_from_raw_json(conn: DBConnection) -> None:
     """One-time migration: the `resumes` table is new, but every ride ever
     synced already carries its raw GraphQL response (including `resumes`,
     which the query has always requested but the app never stored) in
@@ -337,7 +558,7 @@ def _backfill_resumes_from_raw_json(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def claim_orphaned_data(conn: sqlite3.Connection, user_id: str) -> None:
+def claim_orphaned_data(conn: DBConnection, user_id: str) -> None:
     """One-time migration helper: if this is the very first account ever
     created on this database (the pre-multi-tenant → multi-tenant
     transition), attribute all not-yet-owned rows to it. Never runs once a
@@ -352,20 +573,20 @@ def claim_orphaned_data(conn: sqlite3.Connection, user_id: str) -> None:
     conn.commit()
 
 
-def upsert_user(conn: sqlite3.Connection, liberty_rider_id: str, first_name: str | None, email: str | None) -> None:
+def upsert_user(conn: DBConnection, liberty_rider_id: str, first_name: str | None, email: str | None) -> None:
     conn.execute(
         """
-        INSERT INTO users (id, first_name, email, created_at) VALUES (?, ?, ?, datetime('now'))
+        INSERT INTO users (id, first_name, email, created_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             first_name = COALESCE(excluded.first_name, users.first_name),
             email = COALESCE(excluded.email, users.email)
         """,
-        (liberty_rider_id, first_name, email),
+        (liberty_rider_id, first_name, email, _now()),
     )
     conn.commit()
 
 
-def save_user_tokens(conn: sqlite3.Connection, user_id: str, bearer_token: str, refresh_token: str | None, api_key: str | None) -> None:
+def save_user_tokens(conn: DBConnection, user_id: str, bearer_token: str, refresh_token: str | None, api_key: str | None) -> None:
     conn.execute(
         "UPDATE users SET bearer_token = ?, refresh_token = COALESCE(?, refresh_token), "
         "firebase_api_key = COALESCE(?, firebase_api_key) WHERE id = ?",
@@ -374,29 +595,29 @@ def save_user_tokens(conn: sqlite3.Connection, user_id: str, bearer_token: str, 
     conn.commit()
 
 
-def create_session(conn: sqlite3.Connection, user_id: str) -> str:
+def create_session(conn: DBConnection, user_id: str) -> str:
     session_id = secrets.token_urlsafe(32)
     conn.execute(
-        "INSERT INTO sessions (id, user_id, created_at) VALUES (?, ?, datetime('now'))",
-        (session_id, user_id),
+        "INSERT INTO sessions (id, user_id, created_at) VALUES (?, ?, ?)",
+        (session_id, user_id, _now()),
     )
     conn.commit()
     return session_id
 
 
-def get_session_user(conn: sqlite3.Connection, session_id: str):
+def get_session_user(conn: DBConnection, session_id: str):
     return conn.execute(
         "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?",
         (session_id,),
     ).fetchone()
 
 
-def delete_session(conn: sqlite3.Connection, session_id: str) -> None:
+def delete_session(conn: DBConnection, session_id: str) -> None:
     conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     conn.commit()
 
 
-def upsert_ride(conn: sqlite3.Connection, user_id: str, ride: dict) -> None:
+def upsert_ride(conn: DBConnection, user_id: str, ride: dict) -> None:
     start = ride.get("startLocation") or {}
     stop = ride.get("stopLocation") or {}
     vehicle = ride.get("vehicle") or {}
@@ -468,14 +689,14 @@ def upsert_ride(conn: sqlite3.Connection, user_id: str, ride: dict) -> None:
         )
 
 
-def get_sync_state(conn: sqlite3.Connection, user_id: str, key: str) -> str | None:
+def get_sync_state(conn: DBConnection, user_id: str, key: str) -> str | None:
     row = conn.execute(
         "SELECT value FROM sync_state WHERE user_id = ? AND key = ?", (user_id, key)
     ).fetchone()
     return row["value"] if row else None
 
 
-def set_sync_state(conn: sqlite3.Connection, user_id: str, key: str, value: str) -> None:
+def set_sync_state(conn: DBConnection, user_id: str, key: str, value: str) -> None:
     conn.execute(
         "INSERT INTO sync_state (user_id, key, value) VALUES (?, ?, ?) "
         "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value",

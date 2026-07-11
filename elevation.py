@@ -51,7 +51,8 @@ def get_elevations(conn, points: list[tuple[float, float]]) -> list[float | None
                 continue
             cached[(lat, lon)] = elevation
             conn.execute(
-                "INSERT OR REPLACE INTO elevation_cache (lat, lon, elevation) VALUES (?, ?, ?)",
+                "INSERT INTO elevation_cache (lat, lon, elevation) VALUES (?, ?, ?) "
+                "ON CONFLICT(lat, lon) DO UPDATE SET elevation = excluded.elevation",
                 (lat, lon, elevation),
             )
     conn.commit()

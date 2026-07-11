@@ -15,7 +15,8 @@ you're running this for yourself or hosting it for a few people.
 ## Features
 
 - **Sync** — pulls your full ride history (or just what's new) from Liberty
-  Rider's GraphQL API into a local SQLite database.
+  Rider's GraphQL API into a database — SQLite for local/single-user use,
+  or Postgres for a hosted deployment (see [How it works](#how-it-works)).
 - **Roadtrips** — manually group rides into named, multi-day trips, with a
   collapsible day-by-day breakdown and a km/day histogram (rest days show
   as visible gaps).
@@ -72,8 +73,11 @@ Coming soon.
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+ (the codebase uses `X | Y` union types at runtime, not just
+  in annotations)
 - A Liberty Rider account with some ride history
+- Postgres, only if deploying for more than yourself (see below) — plain
+  SQLite is used automatically otherwise, no setup needed
 
 ## Setup
 
@@ -87,8 +91,9 @@ email and password — that's it. There's no separate token to fetch or paste;
 the app exchanges your credentials directly with Firebase (the same
 identity provider Liberty Rider's own web app uses) and keeps a session for
 you from then on. Your password is never stored — only the resulting
-session tokens are, encrypted-at-rest storage of which is on the roadmap
-before this is used for anyone but yourself (see Disclaimer).
+session tokens are, in the same database as your rides (SQLite file or
+Postgres — see below), relying on the host's own storage/access security
+rather than any additional field-level encryption in the app itself.
 
 Once logged in, click **Synchroniser** to pull your ride history in, then
 **Full sync** any time you want to re-walk the entire history instead of
@@ -98,22 +103,28 @@ just what's new.
 
 Every account is fully isolated (its own rides/roadtrips/tags, scoped by
 your Liberty Rider user id) — logging in just works for anyone with a
-Liberty Rider account, no per-user setup needed. If you deploy this
-somewhere reachable over the network rather than on `127.0.0.1`, set:
+Liberty Rider account, no per-user setup needed. For a real hosted
+deployment (not just `127.0.0.1`), set:
 
 ```bash
-export COOKIE_SECURE=1   # only send the session cookie over HTTPS
+export DATABASE_URL=postgres://...   # switches the backend from SQLite to Postgres
+export COOKIE_SECURE=1               # only send the session cookie over HTTPS
 ```
 
 and put a real HTTPS reverse proxy in front of it — the app itself doesn't
-terminate TLS.
+terminate TLS. A single-file SQLite database works fine for one person on
+their own machine, but isn't a good fit for a multi-user host (concurrent
+writes, no separate backup story) — see `docs/ARCHITECTURE.md`.
 
 ## How it works
 
-- **Backend**: FastAPI + raw SQLite (no ORM) — see `app.py`, `db.py`,
-  `sync.py`. Ride data is fetched via a small GraphQL client
-  (`liberty_client.py`) and upserted into `data/rides.db`, which is
-  gitignored.
+- **Backend**: FastAPI, no ORM — see `app.py`, `db.py`, `sync.py`. `db.py`
+  picks its backend from `DATABASE_URL`: unset uses a local SQLite file
+  (`data/rides.db`, gitignored); set, it uses Postgres via `psycopg`
+  instead — same SQL (`?`-style placeholders throughout), translated
+  underneath, see `db.py`'s module docstring. Ride data is fetched via a
+  small GraphQL client (`liberty_client.py`) and upserted into whichever
+  backend is active.
 - **Frontend**: a single-page vanilla-JS app (`static/index.html`,
   `static/app.js`) using Leaflet for mapping, with no build step.
 - **Auth**: one method — email + password, exchanged directly with
