@@ -219,15 +219,15 @@ def _merged_ride_dict(conn, row, members_map=None) -> dict:
     return base
 
 
-def _merged_polyline_and_pauses(conn, row) -> tuple[list, list]:
-    group = _merge_group(conn, row)
+def _merged_polyline_and_pauses(conn, row, members_map=None, pauses_map=None) -> tuple[list, list]:
+    group = _merge_group(conn, row, members_map)
     points = []
     for r in group:
         if r["detailed_polyline"]:
             points.extend(polyline_lib.decode(r["detailed_polyline"]))
     pauses = []
     for r in group:
-        pauses.extend(_raw_pauses(conn, r["id"]))
+        pauses.extend(pauses_map.get(r["id"], []) if pauses_map is not None else _raw_pauses(conn, r["id"]))
     return points, pauses
 
 
@@ -302,11 +302,41 @@ def _merged_ride_timeline(conn, row) -> list[dict]:
     ]
 
 
-def _polylines_and_pauses(conn, ride_rows) -> tuple[dict, dict]:
+def _pauses_map(conn, ride_ids: list[str]) -> dict:
+    """All pauses for the given ride ids, in one query, keyed by ride_id."""
+    if not ride_ids:
+        return {}
+    placeholders = ", ".join("?" * len(ride_ids))
+    rows = conn.execute(
+        f"SELECT * FROM pauses WHERE ride_id IN ({placeholders}) ORDER BY estimated_time",
+        ride_ids,
+    ).fetchall()
+    out: dict = {}
+    for p in rows:
+        out.setdefault(p["ride_id"], []).append({
+            "estimated_time": p["estimated_time"],
+            "automatic": bool(p["automatic"]),
+            "lat": p["lat"],
+            "lon": p["lon"],
+        })
+    return out
+
+
+def _polylines_and_pauses(conn, ride_rows, members_map=None) -> tuple[dict, dict]:
+    # Every ride in play (the rows themselves plus any merge members),
+    # so pauses for the whole set can be fetched in one query instead of
+    # one query per ride (which, per merge group, used to mean one query
+    # per *member* too).
+    all_ids = []
+    for r in ride_rows:
+        all_ids.append(r["id"])
+        if members_map is not None:
+            all_ids.extend(m["id"] for m in members_map.get(r["id"], []))
+    pauses_map = _pauses_map(conn, all_ids)
     polylines = {}
     pauses = {}
     for r in ride_rows:
-        points, p = _merged_polyline_and_pauses(conn, r)
+        points, p = _merged_polyline_and_pauses(conn, r, members_map, pauses_map)
         polylines[r["id"]] = points
         pauses[r["id"]] = p
     return polylines, pauses
@@ -1083,7 +1113,7 @@ def api_roadtrip_detail(trip_id: int, user=Depends(get_session_user)):
         ).fetchall()
         members_map = _merge_members_map(conn, user["id"])
         rides = [_merged_ride_dict(conn, r, members_map) for r in ride_rows]
-        polylines, pauses = _polylines_and_pauses(conn, ride_rows)
+        polylines, pauses = _polylines_and_pauses(conn, ride_rows, members_map)
 
         summary = _roadtrip_summary(conn, trip, ride_rows, members_map)
         summary["rides"] = rides
@@ -1237,7 +1267,7 @@ def api_tag_detail(tag_id: int, user=Depends(get_session_user)):
         ride_rows = _tag_ride_rows(conn, tag_id)
         members_map = _merge_members_map(conn, user["id"])
         rides = [_merged_ride_dict(conn, r, members_map) for r in ride_rows]
-        polylines, pauses = _polylines_and_pauses(conn, ride_rows)
+        polylines, pauses = _polylines_and_pauses(conn, ride_rows, members_map)
 
         summary = _tag_summary(conn, tag, ride_rows, members_map)
         summary["rides"] = rides
