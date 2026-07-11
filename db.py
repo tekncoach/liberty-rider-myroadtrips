@@ -573,6 +573,32 @@ def claim_orphaned_data(conn: DBConnection, user_id: str) -> None:
     conn.commit()
 
 
+def purge_user_data(conn: DBConnection, user_id: str) -> None:
+    """Wipes everything synced/organized for this account (rides, roadtrips,
+    tags, sync cursor) so the next sync starts from a genuinely empty state —
+    lets one Liberty Rider account be used to re-test onboarding repeatedly.
+    Leaves the `users` row and current session alone (still logged in), and
+    leaves the global elevation/mountain-pass caches alone (not user data —
+    just lat/lon lookups, harmless and expensive to redo)."""
+    conn.execute(
+        "DELETE FROM pauses WHERE ride_id IN (SELECT id FROM rides WHERE user_id = ?)", (user_id,)
+    )
+    conn.execute(
+        "DELETE FROM resumes WHERE ride_id IN (SELECT id FROM rides WHERE user_id = ?)", (user_id,)
+    )
+    conn.execute(
+        "DELETE FROM ride_cols WHERE ride_id IN (SELECT id FROM rides WHERE user_id = ?)", (user_id,)
+    )
+    conn.execute(
+        "DELETE FROM ride_tags WHERE ride_id IN (SELECT id FROM rides WHERE user_id = ?)", (user_id,)
+    )
+    conn.execute("DELETE FROM rides WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM roadtrips WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM tags WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM sync_state WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+
 def upsert_user(conn: DBConnection, liberty_rider_id: str, first_name: str | None, email: str | None) -> None:
     conn.execute(
         """

@@ -86,6 +86,9 @@
   #userMenu button:hover { background: var(--row-hover); }
   #userMenu .menu-title { display: block; font-weight: 600; }
   #userMenu .menu-sub { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: normal; line-height: 1.35; }
+  /* Maintainer-only tool, hidden by default until JS confirms is_admin — see enterApp(). */
+  #purgeDataBtn { display: none; }
+  #purgeDataBtn .menu-title { color: #b3261e; }
   #syncstatus:not(:empty) { margin-top: 6px; }
   button {
     font-family: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--bg);
@@ -401,6 +404,10 @@
           <button id="syncFullBtn">
             <span class="menu-title">Resynchroniser tout l'historique</span>
             <span class="menu-sub">Re-télécharge tous tes trajets depuis le début, pas juste les nouveaux — utile si des données semblent manquantes ou incorrectes</span>
+          </button>
+          <button id="purgeDataBtn" class="menu-danger">
+            <span class="menu-title">Purger toutes mes données</span>
+            <span class="menu-sub">Supprime tous les trajets/roadtrips/tags synchronisés localement — utile pour retester l'onboarding depuis zéro. Ton compte Liberty Rider n'est pas touché.</span>
           </button>
           <button id="logoutBtn">Déconnexion</button>
         </div>

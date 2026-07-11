@@ -43,6 +43,10 @@ FIREBASE_API_KEY = os.environ.get("LIBERTY_RIDER_FIREBASE_API_KEY", DEFAULT_FIRE
 # Set COOKIE_SECURE=1 behind HTTPS (any real deployment) so the session
 # cookie is never sent over plain HTTP. Left off by default for local dev.
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"
+# Comma-separated Liberty Rider user ids (currentUser.id) allowed to use
+# maintainer-only tools (currently: purging one's own synced data to
+# re-test onboarding) — not a feature end users are meant to see or use.
+ADMIN_USER_IDS = {u.strip() for u in os.environ.get("ADMIN_USER_IDS", "").split(",") if u.strip()}
 
 app = FastAPI(title="Mes trajets — Liberty Rider")
 db.init_db()
@@ -596,7 +600,7 @@ def api_login(req: LoginRequest, response: Response):
     response.set_cookie(
         SESSION_COOKIE, session_id, httponly=True, samesite="lax", secure=COOKIE_SECURE, max_age=60 * 60 * 24 * 30,
     )
-    return {"ok": True, "first_name": lr_user.get("firstName")}
+    return {"ok": True, "first_name": lr_user.get("firstName"), "is_admin": user_id in ADMIN_USER_IDS}
 
 
 @app.post("/api/auth/logout")
@@ -622,7 +626,7 @@ def api_auth_status(session_id: str | None = Cookie(default=None, alias=SESSION_
         conn.close()
     if not user:
         return {"logged_in": False}
-    return {"logged_in": True, "first_name": user["first_name"]}
+    return {"logged_in": True, "first_name": user["first_name"], "is_admin": user["id"] in ADMIN_USER_IDS}
 
 
 @app.get("/api/auth/profile")
@@ -636,6 +640,22 @@ def api_auth_profile(user=Depends(get_session_user)):
     finally:
         conn.close()
     return {"first_name": lr_user.get("firstName") or user["first_name"], "manual_ride_count": lr_user.get("manualRideCount")}
+
+
+@app.delete("/api/account/data")
+def api_purge_account_data(user=Depends(get_session_user)):
+    """Maintainer-only: wipes every ride/roadtrip/tag synced locally for this
+    account (not the Liberty Rider account itself), to re-test onboarding
+    from a genuinely empty state. Gated on ADMIN_USER_IDS — not something
+    regular users should see or be able to trigger on their own data."""
+    if user["id"] not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not available on this account")
+    conn = db.connect()
+    try:
+        db.purge_user_data(conn, user["id"])
+    finally:
+        conn.close()
+    return {"ok": True}
 
 
 # --- sync -----------------------------------------------------------------

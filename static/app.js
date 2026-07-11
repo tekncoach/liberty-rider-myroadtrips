@@ -82,7 +82,7 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   try {
     const result = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
     document.getElementById("loginPassword").value = "";
-    await enterApp(result.first_name);
+    await enterApp(result.first_name, result.is_admin);
   } catch (e) {
     errorEl.textContent = "Connexion impossible : " + e.message;
   } finally {
@@ -106,10 +106,12 @@ document.addEventListener("click", (e) => {
   if (!menu.contains(e.target) && e.target.id !== "userMenuBtn") menu.classList.remove("open");
 });
 
-async function enterApp(firstName) {
+async function enterApp(firstName, isAdmin) {
   document.getElementById("authScreen").style.display = "none";
   document.getElementById("app").style.display = "flex";
   setProfileGreeting(firstName);
+  // Maintainer-only tool — not something regular users should see.
+  document.getElementById("purgeDataBtn").style.display = isAdmin ? "block" : "none";
   switchTab(state.tab);
   await refresh();
   refreshProfile();
@@ -139,6 +141,22 @@ document.getElementById("syncBtn").addEventListener("click", () => doSync(false)
 document.getElementById("syncFullBtn").addEventListener("click", () => {
   document.getElementById("userMenu").classList.remove("open");
   doSync(true);
+});
+
+document.getElementById("purgeDataBtn").addEventListener("click", async () => {
+  document.getElementById("userMenu").classList.remove("open");
+  if (!confirm("Supprimer tous les trajets/roadtrips/tags synchronisés localement pour ce compte ? Ton compte Liberty Rider n'est pas touché, mais il faudra tout re-synchroniser ici.")) {
+    return;
+  }
+  const statusEl = document.getElementById("syncstatus");
+  statusEl.textContent = "Purge en cours…";
+  try {
+    await api("/api/account/data", { method: "DELETE" });
+    statusEl.textContent = "Données locales purgées.";
+    await refresh();
+  } catch (e) {
+    statusEl.textContent = "Erreur : " + e.message;
+  }
 });
 
 async function doSync(full) {
@@ -1153,7 +1171,7 @@ async function renderElevationChart(rideId) {
 (async () => {
   const status = await api("/api/auth/status");
   if (status.logged_in) {
-    await enterApp(status.first_name);
+    await enterApp(status.first_name, status.is_admin);
   }
   // else: leave #authScreen showing, #app stays hidden — no data is ever
   // fetched before a session is confirmed.

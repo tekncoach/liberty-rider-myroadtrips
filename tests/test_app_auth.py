@@ -45,7 +45,7 @@ def test_auth_status_reflects_logged_in_state(client, login_as):
     login_as(client, "user-1", first_name="Alex")
 
     resp = client.get("/api/auth/status")
-    assert resp.json() == {"logged_in": True, "first_name": "Alex"}
+    assert resp.json() == {"logged_in": True, "first_name": "Alex", "is_admin": False}
 
 
 def test_data_endpoints_require_session(client):
