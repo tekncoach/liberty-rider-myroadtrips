@@ -691,7 +691,7 @@ async function showTripDetail(id) {
     <div id="detailhead">
       <h2 contenteditable="true" id="tripName">${escapeHtml(trip.name)}</h2>
       <button id="deleteTripBtn">Supprimer</button>
-      <a href="/api/roadtrips/${trip.id}/export.gpx"><button>Export GPX</button></a>
+      <a href="/api/roadtrips/${trip.id}/export.gpx"><button>📄 Export GPX</button></a>
     </div>
     <div id="detailstats">
       <div class="stat"><div class="v">${trip.day_count}</div><div class="l">jours</div></div>
@@ -740,7 +740,7 @@ async function showTagDetail(id) {
     <div id="detailhead">
       <h2 contenteditable="true" id="tagName">🏷️ ${escapeHtml(tag.name)}</h2>
       <button id="deleteTagBtn">Supprimer le tag</button>
-      <a href="/api/tags/${tag.id}/export.gpx"><button>Export GPX</button></a>
+      <a href="/api/tags/${tag.id}/export.gpx"><button>📄 Export GPX</button></a>
     </div>
     <div id="detailstats">
       <div class="stat"><div class="v">${tag.day_count}</div><div class="l">jours parcourus</div></div>
