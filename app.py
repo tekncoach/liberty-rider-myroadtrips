@@ -161,20 +161,36 @@ def _merge_members(conn, ride_id: str):
     ).fetchall()
 
 
-def _merge_group(conn, row) -> list:
+def _merge_members_map(conn, user_id: str) -> dict:
+    """Every absorbed merge-member this user has, keyed by its
+    representative's id — one query for a whole request (list endpoints
+    iterate many rides) instead of one `_merge_members` query per ride."""
+    rows = conn.execute(
+        "SELECT * FROM rides WHERE user_id = ? AND merged_into IS NOT NULL ORDER BY start_time",
+        (user_id,),
+    ).fetchall()
+    out: dict = {}
+    for r in rows:
+        out.setdefault(r["merged_into"], []).append(r)
+    return out
+
+
+def _merge_group(conn, row, members_map=None) -> list:
     """All raw rows forming this ride's merge group, chronological — just
-    `[row]` if it isn't merged with anything."""
-    members = _merge_members(conn, row["id"])
+    `[row]` if it isn't merged with anything. Pass `members_map` (from
+    `_merge_members_map`) when processing many rides in one request to
+    avoid a separate query per ride."""
+    members = members_map.get(row["id"], []) if members_map is not None else _merge_members(conn, row["id"])
     if not members:
         return [row]
     return sorted([row, *members], key=lambda r: r["start_time"])
 
 
-def _merged_ride_dict(conn, row) -> dict:
+def _merged_ride_dict(conn, row, members_map=None) -> dict:
     """Effective, user-facing view of a ride: if it's a merge representative,
     its stats/name/location are the aggregate of its whole group; the raw
     `rides` rows underneath are never mutated, so un-merging is lossless."""
-    group = _merge_group(conn, row)
+    group = _merge_group(conn, row, members_map)
     base = ride_row_to_dict(row)
     base["merge_ride_ids"] = [r["id"] for r in group]
     if len(group) == 1:
@@ -717,7 +733,8 @@ def api_list_rides(grouped: bool | None = None, user=Depends(get_session_user)):
                 "ORDER BY start_time DESC",
                 (user["id"],),
             ).fetchall()
-        rides = [_merged_ride_dict(conn, r) for r in rows]
+        members_map = _merge_members_map(conn, user["id"])
+        rides = [_merged_ride_dict(conn, r, members_map) for r in rows]
         _attach_tags_bulk(conn, rides)
         _attach_col_names_bulk(conn, rides)
         add_suggestions(rides)
@@ -1003,8 +1020,8 @@ def api_detach_ride(ride_id: str, user=Depends(get_session_user)):
 
 # --- roadtrips --------------------------------------------------------
 
-def _roadtrip_summary(conn, trip_row, ride_rows) -> dict:
-    rides = [_merged_ride_dict(conn, r) for r in ride_rows]
+def _roadtrip_summary(conn, trip_row, ride_rows, members_map=None) -> dict:
+    rides = [_merged_ride_dict(conn, r, members_map) for r in ride_rows]
     total_distance = sum(r["distance"] or 0 for r in rides)
     total_duration = sum(r["duration"] or 0 for r in rides)
     total_pauses = sum(r["pause_count"] or 0 for r in rides)
@@ -1041,13 +1058,17 @@ def api_list_roadtrips(user=Depends(get_session_user)):
         trips = conn.execute(
             "SELECT * FROM roadtrips WHERE user_id = ? ORDER BY id DESC", (user["id"],)
         ).fetchall()
-        out = []
-        for t in trips:
-            rides = conn.execute(
-                "SELECT * FROM rides WHERE roadtrip_id = ? ORDER BY start_time", (t["id"],)
-            ).fetchall()
-            out.append(_roadtrip_summary(conn, t, rides))
-        return out
+        members_map = _merge_members_map(conn, user["id"])
+        # One query for every roadtrip's rides instead of one query per
+        # roadtrip — grouped by roadtrip_id in Python below.
+        all_rides = conn.execute(
+            "SELECT * FROM rides WHERE user_id = ? AND roadtrip_id IS NOT NULL ORDER BY start_time",
+            (user["id"],),
+        ).fetchall()
+        rides_by_trip: dict = {}
+        for r in all_rides:
+            rides_by_trip.setdefault(r["roadtrip_id"], []).append(r)
+        return [_roadtrip_summary(conn, t, rides_by_trip.get(t["id"], []), members_map) for t in trips]
     finally:
         conn.close()
 
@@ -1060,10 +1081,11 @@ def api_roadtrip_detail(trip_id: int, user=Depends(get_session_user)):
         ride_rows = conn.execute(
             "SELECT * FROM rides WHERE roadtrip_id = ? ORDER BY start_time", (trip_id,)
         ).fetchall()
-        rides = [_merged_ride_dict(conn, r) for r in ride_rows]
+        members_map = _merge_members_map(conn, user["id"])
+        rides = [_merged_ride_dict(conn, r, members_map) for r in ride_rows]
         polylines, pauses = _polylines_and_pauses(conn, ride_rows)
 
-        summary = _roadtrip_summary(conn, trip, ride_rows)
+        summary = _roadtrip_summary(conn, trip, ride_rows, members_map)
         summary["rides"] = rides
         summary["polylines"] = polylines
         summary["pauses"] = pauses
@@ -1150,8 +1172,8 @@ def api_export_gpx(trip_id: int, user=Depends(get_session_user)):
 
 # --- tags ---------------------------------------------------------------
 
-def _tag_summary(conn, tag_row, ride_rows) -> dict:
-    rides = [_merged_ride_dict(conn, r) for r in ride_rows]
+def _tag_summary(conn, tag_row, ride_rows, members_map=None) -> dict:
+    rides = [_merged_ride_dict(conn, r, members_map) for r in ride_rows]
     total_distance = sum(r["distance"] or 0 for r in rides)
     total_duration = sum(r["duration"] or 0 for r in rides)
     total_pauses = sum(r["pause_count"] or 0 for r in rides)
@@ -1191,7 +1213,18 @@ def api_list_tags(user=Depends(get_session_user)):
         tags = conn.execute(
             "SELECT * FROM tags WHERE user_id = ? ORDER BY name", (user["id"],)
         ).fetchall()
-        return [_tag_summary(conn, t, _tag_ride_rows(conn, t["id"])) for t in tags]
+        members_map = _merge_members_map(conn, user["id"])
+        # One query for every tag's rides instead of one query per tag.
+        all_rows = conn.execute(
+            "SELECT r.*, rt.tag_id AS tag_id_group FROM rides r "
+            "JOIN ride_tags rt ON rt.ride_id = r.id JOIN tags t ON t.id = rt.tag_id "
+            "WHERE t.user_id = ? ORDER BY r.start_time",
+            (user["id"],),
+        ).fetchall()
+        rides_by_tag: dict = {}
+        for r in all_rows:
+            rides_by_tag.setdefault(r["tag_id_group"], []).append(r)
+        return [_tag_summary(conn, t, rides_by_tag.get(t["id"], []), members_map) for t in tags]
     finally:
         conn.close()
 
@@ -1202,10 +1235,11 @@ def api_tag_detail(tag_id: int, user=Depends(get_session_user)):
     try:
         tag = _get_owned_tag(conn, tag_id, user["id"])
         ride_rows = _tag_ride_rows(conn, tag_id)
-        rides = [_merged_ride_dict(conn, r) for r in ride_rows]
+        members_map = _merge_members_map(conn, user["id"])
+        rides = [_merged_ride_dict(conn, r, members_map) for r in ride_rows]
         polylines, pauses = _polylines_and_pauses(conn, ride_rows)
 
-        summary = _tag_summary(conn, tag, ride_rows)
+        summary = _tag_summary(conn, tag, ride_rows, members_map)
         summary["rides"] = rides
         summary["polylines"] = polylines
         summary["pauses"] = pauses
