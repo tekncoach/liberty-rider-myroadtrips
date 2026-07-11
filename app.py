@@ -1255,6 +1255,11 @@ def api_export_tag_gpx(tag_id: int, user=Depends(get_session_user)):
 
 
 @app.get("/")
+def landing():
+    return FileResponse(STATIC / "landing.html")
+
+
+@app.get("/app")
 def index():
     return FileResponse(STATIC / "index.html")
 

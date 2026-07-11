@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Carnet de Route — retrouve tes trajets moto Liberty Rider</title>
+<style>
+  :root {
+    --cream: #f3ede0;
+    --paper: #faf6ec;
+    --ink: #2b2420;
+    --muted: #7a6f5c;
+    --line: #ddd0ba;
+    --terracotta: #c94722;
+    --terracotta-ink: #ffffff;
+    --teal: #1f6f5c;
+    --shadow: 0 1px 2px rgba(43,36,32,0.06), 0 8px 24px rgba(43,36,32,0.07);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --cream: #201c19;
+      --paper: #2a241f;
+      --ink: #f1ece2;
+      --muted: #a89e8d;
+      --line: #453b30;
+      --terracotta: #f0794f;
+      --terracotta-ink: #201c19;
+      --teal: #4fb59b;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --cream: #201c19; --paper: #2a241f; --ink: #f1ece2; --muted: #a89e8d; --line: #453b30;
+    --terracotta: #f0794f; --terracotta-ink: #201c19; --teal: #4fb59b;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --cream: #f3ede0; --paper: #faf6ec; --ink: #2b2420; --muted: #7a6f5c; --line: #ddd0ba;
+    --terracotta: #c94722; --terracotta-ink: #ffffff; --teal: #1f6f5c;
+    --shadow: 0 1px 2px rgba(43,36,32,0.06), 0 8px 24px rgba(43,36,32,0.07);
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--cream);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .serif {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Times New Roman", serif;
+  }
+  .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+  a { color: inherit; }
+  img { max-width: 100%; display: block; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
+  .eyebrow {
+    font-size: 12.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--terracotta); margin: 0 0 12px;
+  }
+  h1, h2, h3 { text-wrap: balance; margin: 0; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px; font-size: 15.5px; font-weight: 600;
+    padding: 13px 24px; border-radius: 3px; text-decoration: none; border: 1.5px solid transparent;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn-primary { background: var(--terracotta); color: var(--terracotta-ink); box-shadow: var(--shadow); }
+  .btn-primary:hover { opacity: 0.92; }
+  .btn-ghost { border-color: var(--line); color: var(--ink); }
+  .btn-ghost:hover { border-color: var(--terracotta); color: var(--terracotta); }
+  :focus-visible { outline: 2.5px solid var(--terracotta); outline-offset: 2px; }
+
+  /* --- header --- */
+  header {
+    position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--cream) 88%, transparent);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+  }
+  header .wrap { display: flex; align-items: center; justify-content: space-between; padding-top: 16px; padding-bottom: 16px; }
+  .wordmark { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 700; text-decoration: none; }
+  .wordmark .serif { font-size: 20px; }
+  header nav { display: flex; align-items: center; gap: 22px; }
+  header nav a.navlink { font-size: 14.5px; font-weight: 600; text-decoration: none; color: var(--muted); }
+  header nav a.navlink:hover { color: var(--ink); }
+  @media (max-width: 640px) { header nav a.navlink { display: none; } }
+
+  /* --- hero --- */
+  .hero { position: relative; overflow: hidden; padding: 88px 0 64px; }
+  .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 56px; align-items: center; position: relative; z-index: 2; }
+  .hero-grid > * { min-width: 0; }
+  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } }
+  .hero h1 { font-size: clamp(2.5rem, 5.4vw, 4rem); line-height: 1.06; letter-spacing: -0.01em; }
+  .hero h1 em { color: var(--terracotta); font-style: italic; }
+  .hero p.lede { font-size: 18.5px; color: var(--muted); max-width: 46ch; margin: 22px 0 32px; }
+  .hero-ctas { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+  .hero-note { margin-top: 18px; font-size: 13px; color: var(--muted); }
+
+  .route-svg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; opacity: 0.55; pointer-events: none; }
+
+  .hero-card {
+    background: var(--paper); border: 1px solid var(--line); border-radius: 4px; box-shadow: var(--shadow);
+    padding: 10px; transform: rotate(1.2deg);
+  }
+  .hero-card img { border-radius: 2px; }
+  .hero-card .cap { display: flex; justify-content: space-between; padding: 10px 8px 4px; font-size: 12px; color: var(--muted); }
+
+  /* --- mountain divider (signature motif) --- */
+  .divider { width: 100%; height: 46px; display: block; color: var(--terracotta); opacity: 0.85; }
+  .divider-wrap { padding: 6px 0 2px; }
+
+  /* --- feature sections --- */
+  .feature { padding: 76px 0; border-top: 1px solid var(--line); }
+  .feature .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: center; }
+  .feature .grid > * { min-width: 0; }
+  .feature.reverse .grid { direction: rtl; }
+  .feature.reverse .grid > * { direction: ltr; }
+  @media (max-width: 900px) { .feature .grid { grid-template-columns: 1fr; } .feature.reverse .grid { direction: ltr; } }
+  .feature h2 { font-size: clamp(1.7rem, 3vw, 2.35rem); margin-bottom: 16px; }
+  .feature p.desc { color: var(--muted); font-size: 16.5px; max-width: 48ch; margin: 0 0 22px; }
+  .feature ul.bullets { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+  .feature ul.bullets li { display: flex; gap: 10px; font-size: 15px; }
+  .feature ul.bullets .tri { flex: none; color: var(--teal); font-size: 13px; margin-top: 3px; }
+  .shot-frame {
+    background: var(--paper); border: 1px solid var(--line); border-radius: 4px; box-shadow: var(--shadow);
+    padding: 8px; position: relative;
+  }
+  .shot-frame img { border-radius: 2px; width: 100%; }
+  .shot-tab {
+    position: absolute; top: -12px; left: 20px; background: var(--terracotta); color: var(--terracotta-ink);
+    font-size: 11.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+    padding: 5px 12px; border-radius: 2px; box-shadow: var(--shadow);
+  }
+
+  /* --- stats strip --- */
+  .stats { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 40px 0; }
+  .stats .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; text-align: center; }
+  @media (max-width: 700px) { .stats .grid { grid-template-columns: repeat(2, 1fr); } }
+  .stat .v { font-size: clamp(1.6rem, 3vw, 2.1rem); font-weight: 700; }
+  .stat .l { font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; }
+
+  /* --- trust section --- */
+  .trust { padding: 72px 0; }
+  .trust .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
+  @media (max-width: 800px) { .trust .grid { grid-template-columns: 1fr; } }
+  .trust-card { border: 1px solid var(--line); border-radius: 4px; padding: 26px 24px; background: var(--paper); }
+  .trust-card h3 { font-size: 16.5px; margin-bottom: 8px; }
+  .trust-card p { color: var(--muted); font-size: 14.5px; margin: 0; }
+  .trust-card .mark { color: var(--teal); font-size: 20px; margin-bottom: 10px; display: block; }
+
+  /* --- final CTA --- */
+  .cta-band { background: var(--terracotta); color: var(--terracotta-ink); padding: 68px 0; text-align: center; }
+  .cta-band h2 { font-size: clamp(1.8rem, 3.4vw, 2.5rem); margin-bottom: 14px; }
+  .cta-band p { opacity: 0.92; font-size: 16.5px; max-width: 46ch; margin: 0 auto 28px; }
+  .cta-band .btn-primary { background: var(--terracotta-ink); color: var(--terracotta); }
+  .cta-band .btn-ghost { border-color: color-mix(in srgb, var(--terracotta-ink) 55%, transparent); color: var(--terracotta-ink); }
+  .cta-band .btn-ghost:hover { border-color: var(--terracotta-ink); color: var(--terracotta-ink); opacity: 0.85; }
+
+  footer { padding: 40px 0 60px; }
+  footer .foot-grid { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 20px; align-items: flex-start; margin-bottom: 22px; }
+  footer .foot-links { display: flex; gap: 20px; font-size: 14px; }
+  footer .foot-links a { text-decoration: none; color: var(--muted); font-weight: 600; }
+  footer .foot-links a:hover { color: var(--ink); }
+  footer .disclaimer { font-size: 12px; color: var(--muted); line-height: 1.6; border-top: 1px solid var(--line); padding-top: 22px; }
+  footer .disclaimer a { text-decoration: underline; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a href="/" class="wordmark"><span>🏍️</span><span class="serif">Carnet de Route</span></a>
+    <nav>
+      <a class="navlink" href="#mes-traces">Mes traces</a>
+      <a class="navlink" href="#roadtrips">Roadtrips</a>
+      <a class="navlink" href="#tags">Tags</a>
+      <a class="navlink" href="https://github.com/tekncoach/liberty-rider-myroadtrips" target="_blank" rel="noopener">Code source</a>
+      <a class="btn btn-primary" href="/app" style="padding:9px 18px;font-size:14px;">Se connecter</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <svg class="route-svg" viewBox="0 0 1200 560" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <path d="M -50 480 C 150 460, 220 380, 340 400 S 520 480, 610 380 S 760 180, 860 220 S 1020 340, 1250 260"
+      fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="1 14" style="color: var(--terracotta); opacity:0.55" />
+    <path d="M 860 220 L 845 250 L 875 250 Z" fill="var(--terracotta)" opacity="0.5" />
+    <path d="M 610 380 L 598 404 L 622 404 Z" fill="var(--teal)" opacity="0.45" />
+  </svg>
+  <div class="wrap hero-grid">
+    <div>
+      <p class="eyebrow">Pour les motards Liberty Rider</p>
+      <h1 class="serif">Ton historique de trajets,<br><em>enfin</em> visible.</h1>
+      <p class="lede">Liberty Rider ne montre que les roadbooks que tu as publiés — jamais ton historique brut. Carnet de Route récupère tous tes trajets GPS, les range en voyages, et révèle ce que Liberty Rider ne te montre pas : cols nommés, dénivelé, chronologie précise.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="/app">Se connecter avec Liberty Rider →</a>
+        <a class="btn btn-ghost" href="https://github.com/tekncoach/liberty-rider-myroadtrips" target="_blank" rel="noopener">Voir le code source ↗</a>
+      </div>
+      <p class="hero-note">Connexion directe avec ton compte Liberty Rider · Gratuit · Open source</p>
+    </div>
+    <div class="hero-card">
+      <img src="/static/img/screenshot-trace.jpg" alt="Détail d'un trajet Salon-de-Provence → Monieux : chronologie, profil d'altitude avec le Mont Ventoux nommé, carte du tracé." loading="lazy" width="1011" height="1100" />
+      <div class="cap"><span>Salon-de-Provence → Monieux</span><span class="num">295,1 km</span></div>
+    </div>
+  </div>
+</section>
+
+<div class="divider-wrap wrap">
+  <svg class="divider" viewBox="0 0 1200 46" preserveAspectRatio="none" aria-hidden="true">
+    <polyline points="0,38 90,38 160,10 230,34 300,20 380,34 460,6 540,30 620,16 720,34 800,12 900,32 980,22 1060,34 1200,30"
+      fill="none" stroke="currentColor" stroke-width="1.6" />
+  </svg>
+</div>
+
+<section class="feature" id="mes-traces">
+  <div class="wrap grid">
+    <div class="shot-frame">
+      <span class="shot-tab">Mes traces</span>
+      <img src="/static/img/screenshot-trace.jpg" alt="Fiche détaillée d'un trajet avec chronologie trajet/pause, profil d'altitude et cols nommés, notes et tags." loading="lazy" />
+    </div>
+    <div>
+      <p class="eyebrow">Le détail que Liberty Rider n'affiche pas</p>
+      <h2 class="serif">Chaque trajet raconte son histoire</h2>
+      <p class="desc">Clique un trajet et retrouve la chronologie précise (roulage/pause), un profil d'altitude estimé avec dénivelé et vitesse moyenne, et le nom des cols et sommets traversés — <em>Col du Tourmalet</em>, <em>Mont Ventoux</em> — retrouvés automatiquement via OpenStreetMap.</p>
+      <ul class="bullets">
+        <li><span class="tri">▲</span> Cols et sommets identifiés automatiquement sur le tracé</li>
+        <li><span class="tri">▲</span> Recherche par titre, note personnelle ou nom de col</li>
+        <li><span class="tri">▲</span> Fusion en un clic des trajets coupés en deux par un bug de tracking</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="divider-wrap wrap">
+  <svg class="divider" viewBox="0 0 1200 46" preserveAspectRatio="none" aria-hidden="true" style="color:var(--teal)">
+    <polyline points="0,20 100,34 180,14 260,30 340,8 420,28 500,18 600,36 680,10 760,26 840,16 940,32 1020,20 1100,30 1200,14"
+      fill="none" stroke="currentColor" stroke-width="1.6" />
+  </svg>
+</div>
+
+<section class="feature reverse" id="roadtrips">
+  <div class="wrap grid">
+    <div class="shot-frame">
+      <span class="shot-tab" style="background:var(--teal)">Roadtrips</span>
+      <img src="/static/img/screenshot-roadtrip.jpg" alt="Vue d'un roadtrip de 14 jours et 21 étapes à travers les Alpes, avec carte multicolore par jour et histogramme kilométrique." loading="lazy" />
+    </div>
+    <div>
+      <p class="eyebrow">Regroupe tes trajets en voyages</p>
+      <h2 class="serif">D'une liste de trajets à un vrai carnet de voyage</h2>
+      <p class="desc">Rassemble plusieurs trajets consécutifs en un roadtrip : jours, étapes, distance et durée cumulées, un histogramme kilométrique par jour, et la trace complète du voyage sur une seule carte — un jour, une couleur.</p>
+      <ul class="bullets">
+        <li><span class="tri">▲</span> Détail jour par jour, avec chaque étape et ses horaires</li>
+        <li><span class="tri">▲</span> Export GPX du voyage entier en un clic</li>
+        <li><span class="tri">▲</span> Suggestions automatiques : "ces deux trajets s'enchaînent"</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="divider-wrap wrap">
+  <svg class="divider" viewBox="0 0 1200 46" preserveAspectRatio="none" aria-hidden="true">
+    <polyline points="0,34 90,12 170,32 250,20 330,36 410,14 490,28 580,8 660,30 740,18 820,34 900,16 990,28 1070,10 1150,26 1200,20"
+      fill="none" stroke="currentColor" stroke-width="1.6" />
+  </svg>
+</div>
+
+<section class="feature" id="tags">
+  <div class="wrap grid">
+    <div class="shot-frame">
+      <span class="shot-tab">Tags</span>
+      <img src="/static/img/screenshot-tags.jpg" alt="Vue du tag 'paris' regroupant 10 trajets sur plusieurs années, avec toutes les traces superposées sur une même carte." loading="lazy" />
+    </div>
+    <div>
+      <p class="eyebrow">Sans notion de voyage</p>
+      <h2 class="serif">Un lieu que tu retraverses, année après année</h2>
+      <p class="desc">Les tags rassemblent des trajets par thème ou par zone géographique — sans lien de date. Le tag <em>« Paris »</em> ci-contre regroupe 10 trajets étalés sur plus d'un an, tous visibles sur une même carte.</p>
+      <ul class="bullets">
+        <li><span class="tri">▲</span> Un trajet peut porter plusieurs tags à la fois</li>
+        <li><span class="tri">▲</span> Statistiques cumulées : distance, durée, jours parcourus</li>
+        <li><span class="tri">▲</span> Se gère en un clic depuis la fiche d'un trajet</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="stats">
+  <div class="wrap grid">
+    <div class="stat"><div class="v num">108</div><div class="l">Trajets synchronisés</div></div>
+    <div class="stat"><div class="v num">3 118 km</div><div class="l">Le plus long roadtrip</div></div>
+    <div class="stat"><div class="v num">14</div><div class="l">Jours, Alpes + Grandes Alpes</div></div>
+    <div class="stat"><div class="v num">1 901 m</div><div class="l">Mont Ventoux, nommé automatiquement</div></div>
+  </div>
+</section>
+
+<section class="trust">
+  <div class="wrap">
+    <p class="eyebrow" style="text-align:center">Avant de te connecter</p>
+    <h2 class="serif" style="text-align:center; font-size:clamp(1.6rem,3vw,2.1rem); margin-bottom:40px;">Un outil de motard, pas un produit qui vend tes données</h2>
+    <div class="grid">
+      <div class="trust-card">
+        <span class="mark">✎</span>
+        <h3>Ton mot de passe n'est jamais stocké</h3>
+        <p>Il est transmis une seule fois à Firebase — l'authentification que Liberty Rider utilise lui-même — pour obtenir un accès. Cet accès ne sert qu'à synchroniser tes trajets.</p>
+      </div>
+      <div class="trust-card">
+        <span class="mark">⌥</span>
+        <h3>Code source ouvert et vérifiable</h3>
+        <p>Tout le code est public sur GitHub. Pas besoin de nous faire confiance sur parole — lis-le, exécute-le toi-même, ou héberge ta propre instance.</p>
+      </div>
+      <div class="trust-card">
+        <span class="mark">◇</span>
+        <h3>Indépendant de Liberty Rider</h3>
+        <p>Projet non-officiel, sans affiliation avec Liberty Rider. Il se contente de synchroniser ce que l'API expose déjà pour ton propre compte.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="cta-band">
+  <div class="wrap">
+    <h2 class="serif">Reprends la route de ton historique.</h2>
+    <p>Connexion directe avec ton compte Liberty Rider — aucune inscription séparée, aucune carte bancaire.</p>
+    <div class="hero-ctas" style="justify-content:center">
+      <a class="btn btn-primary" href="/app">Se connecter avec Liberty Rider →</a>
+      <a class="btn btn-ghost" href="https://github.com/tekncoach/liberty-rider-myroadtrips" target="_blank" rel="noopener">Voir le code source ↗</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <a href="/" class="wordmark"><span>🏍️</span><span class="serif">Carnet de Route</span></a>
+      <div class="foot-links">
+        <a href="/app">Se connecter</a>
+        <a href="https://github.com/tekncoach/liberty-rider-myroadtrips" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://liberty-rider.com/" target="_blank" rel="noopener">Liberty Rider (officiel)</a>
+      </div>
+    </div>
+    <p class="disclaimer">
+      Projet indépendant et non officiel, sans lien avec Liberty Rider — pas affilié, pas approuvé, pas sponsorisé.
+      « Liberty Rider » et les marques associées appartiennent à leurs propriétaires respectifs.
+      Site officiel : <a href="https://liberty-rider.com/" target="_blank" rel="noopener">liberty-rider.com</a>.
+      Code source disponible sur <a href="https://github.com/tekncoach/liberty-rider-myroadtrips" target="_blank" rel="noopener">GitHub</a>.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
