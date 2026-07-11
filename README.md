@@ -74,7 +74,19 @@ the app to work; both fail silently if unavailable.
 
 ## Screenshots
 
-Coming soon.
+Ride detail — trajet/pause timeline, estimated elevation profile with named
+cols, map, notes and tags:
+
+![Ride detail: timeline, elevation profile with named cols, and map](static/img/screenshot-trace.jpg)
+
+A roadtrip — multiple rides grouped into one trip, with a per-day km
+histogram and every day's track color-coded on one map:
+
+![Roadtrip view: 14-day trip across the Alps, day-by-day map and km histogram](static/img/screenshot-roadtrip.jpg)
+
+A tag — rides collected by place or theme, independent of any date range:
+
+![Tag view: rides tagged "paris" across more than a year, all on one map](static/img/screenshot-tags.jpg)
 
 ## Requirements
 
