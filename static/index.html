@@ -59,6 +59,10 @@
   #authFooter { margin: 16px 0 0 !important; opacity: 0.75; }
   #authDisclaimer { margin: 10px 0 0 !important; opacity: 0.55; font-size: 10.5px !important; }
   #authDisclaimer a { color: inherit; }
+  #backToLanding {
+    display: block; margin-top: 18px; font-size: 12px; color: var(--muted); text-decoration: none;
+  }
+  #backToLanding:hover { color: var(--text); }
 
   #userbar { padding: 8px 12px; border-top: 1px solid var(--border); position: relative; }
   #userRow { display: flex; align-items: center; gap: 8px; }
@@ -362,33 +366,24 @@
   <div id="authCard">
     <h1>🏍️ Carnet de Route</h1>
     <p class="sub">
-      Un outil personnel pour organiser l'historique de tes trajets GPS
-      moto : regroupe-les en roadtrips, tague-les par zone, recolle
-      les traces coupées en deux par un bug de tracking, et visualise tout
-      sur une carte. Se synchronise avec ton compte Liberty Rider, qui ne
-      montre que les roadbooks que tu as publiés — pas ton historique brut ;
-      c'est ce que cet outil récupère pour toi.
+      Connecte-toi avec les <strong>mêmes identifiants que sur Liberty Rider</strong>
+      (l'app ou le site officiel) — ton email et ton mot de passe habituels.
     </p>
     <form id="loginForm">
       <input id="loginEmail" type="email" placeholder="Email Liberty Rider" autocomplete="username" required />
-      <input id="loginPassword" type="password" placeholder="Mot de passe" autocomplete="current-password" required />
+      <input id="loginPassword" type="password" placeholder="Mot de passe Liberty Rider" autocomplete="current-password" required />
       <button id="loginBtn" class="primary" type="submit">Se connecter</button>
     </form>
     <div id="loginError"></div>
     <p class="sub" id="authFooter">
-      Connexion directe avec ton compte Liberty Rider (email + mot de passe).
-      Rien d'autre n'est demandé. Ton mot de passe n'est jamais enregistré —
-      il est transmis une seule fois à Firebase (l'authentification de
-      Liberty Rider) pour obtenir un accès, qui n'est utilisé que pour
-      synchroniser tes trajets. Code source ouvert et vérifiable :
-      <a href="https://github.com/tekncoach/liberty-rider-myroadtrips" target="_blank" rel="noopener">github.com/tekncoach/liberty-rider-myroadtrips</a>.
+      Ton mot de passe n'est jamais enregistré — transmis une seule fois à
+      Firebase, l'authentification que Liberty Rider utilise lui-même.
     </p>
     <p class="sub" id="authDisclaimer">
-      Projet indépendant et non officiel, sans lien avec Liberty Rider —
-      pas affilié, pas approuvé, pas sponsorisé. « Liberty Rider » et les
-      marques associées appartiennent à leurs propriétaires respectifs.
-      Site officiel : <a href="https://liberty-rider.com/" target="_blank" rel="noopener">liberty-rider.com</a>.
+      Projet indépendant, non affilié à Liberty Rider. Marques déposées de
+      leurs propriétaires respectifs.
     </p>
+    <a href="/" id="backToLanding">← Retour à l'accueil</a>
   </div>
 </div>
 <div id="app" style="display:none">
