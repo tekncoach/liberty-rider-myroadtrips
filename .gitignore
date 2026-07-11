@@ -7,3 +7,4 @@ __pycache__/
 .liberty_rider_refresh_token
 .liberty_rider_firebase_api_key
 .env
+.DS_Store
