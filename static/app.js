@@ -79,6 +79,35 @@ function escapeHtml(s) {
   return (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// --- polyline decoding ---
+// The API sends raw Google-encoded polyline strings (precision 5) instead of
+// decoded [lat,lon] arrays — ~6x smaller over the wire, and the decode runs
+// here on the client instead of on the CPU-throttled server. Standard
+// algorithm, matching Python's `polyline` library.
+function decodePolyline(str) {
+  let index = 0, lat = 0, lng = 0;
+  const coords = [];
+  while (index < str.length) {
+    let shift = 0, result = 0, byte;
+    do { byte = str.charCodeAt(index++) - 63; result += (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+    shift = 0; result = 0;
+    do { byte = str.charCodeAt(index++) - 63; result += (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+    coords.push([lat / 1e5, lng / 1e5]);
+  }
+  return coords;
+}
+// A ride's polyline arrives as a LIST of encoded strings (one per merge
+// member) — decode each and concatenate into one flat [lat,lon] array.
+function decodePolylines(encodedList) {
+  const points = [];
+  for (const enc of encodedList || []) {
+    if (enc) for (const p of decodePolyline(enc)) points.push(p);
+  }
+  return points;
+}
+
 // --- auth ---
 // The whole app is gated behind a session: #authScreen (intro + login form)
 // is the only thing shown until /api/auth/status confirms a session, at
@@ -584,9 +613,10 @@ async function openRideModal(id) {
   }).addTo(map);
 
   const bounds = [];
-  if (ride.polyline && ride.polyline.length) {
-    L.polyline(ride.polyline, { color: "#e0552b", weight: 4, opacity: 0.9 }).addTo(map);
-    ride.polyline.forEach((p) => bounds.push(p));
+  const ridePoints = decodePolylines(ride.polyline);
+  if (ridePoints.length) {
+    L.polyline(ridePoints, { color: "#e0552b", weight: 4, opacity: 0.9 }).addTo(map);
+    ridePoints.forEach((p) => bounds.push(p));
   }
   for (const p of ride.pauses || []) {
     if (p.lat == null || p.lon == null) continue;
@@ -932,7 +962,7 @@ function renderMap(trip) {
     const dayPoints = [];
     const pauseGroup = L.layerGroup();
     for (const rideId of day.ride_ids) {
-      const points = trip.polylines[rideId] || [];
+      const points = decodePolylines(trip.polylines[rideId]);
       if (points.length) {
         layers.push(L.polyline(points, { color, weight: 3, opacity: 0.85 }).addTo(map));
         points.forEach((p) => { dayPoints.push(p); allBounds.push(p); });

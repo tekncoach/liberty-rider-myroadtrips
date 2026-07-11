@@ -322,11 +322,21 @@ def _pauses_map(conn, ride_ids: list[str]) -> dict:
     return out
 
 
+def _encoded_polylines(conn, row, members_map=None) -> list:
+    """The raw stored Google-polyline strings for a ride's whole merge group,
+    in chronological order — sent to the browser as-is so it decodes them
+    client-side. Sending the encoded strings (~1 byte/point) instead of
+    decoded [lat, lon] arrays (~20 bytes/point in JSON) shrinks the map
+    payload ~6x and moves the decode off the (CPU-throttled) server onto the
+    client's own machine — see docs/ARCHITECTURE.md."""
+    group = _merge_group(conn, row, members_map)
+    return [r["detailed_polyline"] for r in group if r["detailed_polyline"]]
+
+
 def _polylines_and_pauses(conn, ride_rows, members_map=None) -> tuple[dict, dict]:
-    # Every ride in play (the rows themselves plus any merge members),
-    # so pauses for the whole set can be fetched in one query instead of
-    # one query per ride (which, per merge group, used to mean one query
-    # per *member* too).
+    """For map rendering: encoded polyline strings (a list per ride, one per
+    merge-group member) and pauses, both keyed by ride_id. One pauses query
+    for the whole set (rows + merge members) rather than one per ride."""
     all_ids = []
     for r in ride_rows:
         all_ids.append(r["id"])
@@ -336,9 +346,12 @@ def _polylines_and_pauses(conn, ride_rows, members_map=None) -> tuple[dict, dict
     polylines = {}
     pauses = {}
     for r in ride_rows:
-        points, p = _merged_polyline_and_pauses(conn, r, members_map, pauses_map)
-        polylines[r["id"]] = points
-        pauses[r["id"]] = p
+        group = _merge_group(conn, r, members_map)
+        polylines[r["id"]] = [g["detailed_polyline"] for g in group if g["detailed_polyline"]]
+        merged_pauses = []
+        for g in group:
+            merged_pauses.extend(pauses_map.get(g["id"], []))
+        pauses[r["id"]] = merged_pauses
     return polylines, pauses
 
 
@@ -786,7 +799,10 @@ def api_ride_detail(ride_id: str, user=Depends(get_session_user)):
     try:
         row = _get_owned_ride(conn, ride_id, user["id"])
         ride = _merged_ride_dict(conn, row)
-        ride["polyline"], ride["pauses"] = _merged_polyline_and_pauses(conn, row)
+        # Encoded polyline strings (decoded client-side, see _encoded_polylines);
+        # pauses still come back decoded (few per ride, negligible).
+        ride["polyline"] = _encoded_polylines(conn, row)
+        _, ride["pauses"] = _merged_polyline_and_pauses(conn, row)
         ride["timeline"] = _merged_ride_timeline(conn, row)
         ride["tags"] = _ride_tags(conn, ride_id)
         return ride
