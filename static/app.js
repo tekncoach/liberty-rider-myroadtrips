@@ -243,9 +243,15 @@ function rideMatchesSearch(r, query) {
 }
 
 async function refresh() {
-  state.roadtrips = await api("/api/roadtrips");
-  state.ungrouped = await api("/api/rides");
-  state.tags = await api("/api/tags");
+  // Independent requests — run them concurrently instead of one after
+  // another, since each one's latency otherwise stacks (noticeable once
+  // the DB connection itself has any real setup cost, e.g. behind a
+  // pooler).
+  [state.roadtrips, state.ungrouped, state.tags] = await Promise.all([
+    api("/api/roadtrips"),
+    api("/api/rides"),
+    api("/api/tags"),
+  ]);
   state.dataLoaded = true;
   renderList();
   if (state.activeEntityKind === "trip" && state.activeTripId) showTripDetail(state.activeTripId);
