@@ -99,6 +99,21 @@ def _live_client_for(conn, user) -> LibertyRiderClient:
     return LibertyRiderClient(refreshed["id_token"])
 
 
+# Every rides column EXCEPT the two heavy ones — `detailed_polyline`
+# (~10KB/ride) and `raw_json` (~12KB/ride). List/summary endpoints never
+# read either, so selecting `*` made Postgres ship ~4MB of unused data per
+# request over the pooler (measured: 216ms → 14ms for 175 rides without
+# them). Detail / GPX / elevation paths still `SELECT *` since they decode
+# the polyline.
+RIDE_LIST_COLS = (
+    "id, user_id, name, start_time, distance, duration, duration_without_pauses, "
+    "total_pauses_duration, pause_count, maximum_altitude, is_favorite, hidden, state, "
+    "preview_picture_url, gpx_export_url, gpx_local_path, start_lat, start_lon, "
+    "stop_lat, stop_lon, vehicle_brand, vehicle_model, vehicle_type, vehicle_cc, "
+    "created_roadbook_id, roadtrip_id, merged_into, notes"
+)
+
+
 def ride_row_to_dict(row) -> dict:
     return {
         "id": row["id"],
@@ -761,18 +776,18 @@ def api_list_rides(grouped: bool | None = None, user=Depends(get_session_user)):
         # never listed on its own — only its merge representative is.
         if grouped is None:
             rows = conn.execute(
-                "SELECT * FROM rides WHERE user_id = ? AND merged_into IS NULL ORDER BY start_time DESC",
+                f"SELECT {RIDE_LIST_COLS} FROM rides WHERE user_id = ? AND merged_into IS NULL ORDER BY start_time DESC",
                 (user["id"],),
             ).fetchall()
         elif grouped:
             rows = conn.execute(
-                "SELECT * FROM rides WHERE user_id = ? AND roadtrip_id IS NOT NULL AND merged_into IS NULL "
+                f"SELECT {RIDE_LIST_COLS} FROM rides WHERE user_id = ? AND roadtrip_id IS NOT NULL AND merged_into IS NULL "
                 "ORDER BY start_time DESC",
                 (user["id"],),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM rides WHERE user_id = ? AND roadtrip_id IS NULL AND merged_into IS NULL "
+                f"SELECT {RIDE_LIST_COLS} FROM rides WHERE user_id = ? AND roadtrip_id IS NULL AND merged_into IS NULL "
                 "ORDER BY start_time DESC",
                 (user["id"],),
             ).fetchall()
@@ -1108,7 +1123,7 @@ def api_list_roadtrips(user=Depends(get_session_user)):
         # One query for every roadtrip's rides instead of one query per
         # roadtrip — grouped by roadtrip_id in Python below.
         all_rides = conn.execute(
-            "SELECT * FROM rides WHERE user_id = ? AND roadtrip_id IS NOT NULL ORDER BY start_time",
+            f"SELECT {RIDE_LIST_COLS} FROM rides WHERE user_id = ? AND roadtrip_id IS NOT NULL ORDER BY start_time",
             (user["id"],),
         ).fetchall()
         rides_by_trip: dict = {}
