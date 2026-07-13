@@ -151,8 +151,9 @@ async function enterApp(firstName, isAdmin) {
   document.getElementById("authScreen").style.display = "none";
   document.getElementById("app").style.display = "flex";
   setProfileGreeting(firstName);
-  // Maintainer-only tool — not something regular users should see.
+  // Maintainer-only tools — not something regular users should see.
   document.getElementById("purgeDataBtn").style.display = isAdmin ? "block" : "none";
+  document.getElementById("adminBtn").style.display = isAdmin ? "block" : "none";
   switchTab(state.tab);
   await refresh();
   refreshProfile();
@@ -212,6 +213,71 @@ document.getElementById("purgeDataBtn").addEventListener("click", async () => {
     statusEl.textContent = "Erreur : " + e.message;
   }
 });
+
+// --- admin dashboard (visible only on the maintainer's own account) ---
+document.getElementById("adminBtn").addEventListener("click", () => {
+  document.getElementById("userMenu").classList.remove("open");
+  openAdminModal();
+});
+document.getElementById("adminModalClose").addEventListener("click", closeAdminModal);
+document.getElementById("adminModalBackdrop").addEventListener("click", (e) => {
+  if (e.target.id === "adminModalBackdrop") closeAdminModal();
+});
+
+function closeAdminModal() {
+  document.getElementById("adminModalBackdrop").classList.remove("visible");
+}
+
+// Short absolute date; "—" when the value is missing (e.g. a user who never
+// opened a session).
+function fmtAdminDate(s) {
+  if (!s) return "—";
+  return new Date(s.replace(" ", "T") + "Z").toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+async function openAdminModal() {
+  const backdrop = document.getElementById("adminModalBackdrop");
+  const summary = document.getElementById("adminSummary");
+  const tableWrap = document.getElementById("adminTableWrap");
+  backdrop.classList.add("visible");
+  summary.innerHTML = "";
+  tableWrap.innerHTML = '<div class="section loading-section">Chargement…</div>';
+
+  let data;
+  try {
+    data = await api("/api/admin/stats");
+  } catch (e) {
+    tableWrap.innerHTML = `<div class="section">Erreur : ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+
+  summary.innerHTML = `
+    <div class="stat"><div class="v">${data.user_count}</div><div class="l">Inscrits</div></div>
+    <div class="stat"><div class="v">${data.total_rides}</div><div class="l">Traces importées</div></div>
+    <div class="stat"><div class="v">${data.total_roadtrips}</div><div class="l">Roadtrips créés</div></div>
+  `;
+
+  const rows = data.users.map((u) => `
+    <tr>
+      <td>${escapeHtml(u.first_name || "—")}</td>
+      <td>${escapeHtml(u.email || "—")}</td>
+      <td class="lrid" title="${escapeHtml(u.id)}">${escapeHtml((u.id || "").slice(0, 8))}…</td>
+      <td class="num">${u.rides}</td>
+      <td class="num">${u.roadtrips}</td>
+      <td class="num">${u.tags}</td>
+      <td>${fmtAdminDate(u.created_at)}</td>
+      <td>${fmtAdminDate(u.last_session)}</td>
+    </tr>`).join("");
+  tableWrap.innerHTML = `
+    <table class="admin-table">
+      <thead><tr>
+        <th>Prénom</th><th>Email</th><th>ID Liberty Rider</th>
+        <th>Traces</th><th>Roadtrips</th><th>Tags</th>
+        <th>Inscrit le</th><th>Dernière connexion</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
 
 async function doSync(full) {
   const statusEl = document.getElementById("syncstatus");

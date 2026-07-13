@@ -745,6 +745,37 @@ def api_purge_account_data(user=Depends(get_session_user)):
     return {"ok": True}
 
 
+@app.get("/api/admin/stats")
+def api_admin_stats(user=Depends(get_session_user)):
+    """Maintainer-only dashboard data: one row per registered account with
+    its activity, plus overall totals — to see whether the app is picking
+    up. Gated on ADMIN_USER_IDS (returns 403 otherwise)."""
+    if user["id"] not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Not available on this account")
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT u.id, u.first_name, u.email, u.created_at,
+              (SELECT COUNT(*) FROM rides WHERE user_id = u.id) AS rides,
+              (SELECT COUNT(*) FROM roadtrips WHERE user_id = u.id) AS roadtrips,
+              (SELECT COUNT(*) FROM tags WHERE user_id = u.id) AS tags,
+              (SELECT MAX(created_at) FROM sessions WHERE user_id = u.id) AS last_session
+            FROM users u
+            ORDER BY u.created_at
+            """
+        ).fetchall()
+        users = [dict(r) for r in rows]
+        return {
+            "user_count": len(users),
+            "total_rides": sum(u["rides"] for u in users),
+            "total_roadtrips": sum(u["roadtrips"] for u in users),
+            "users": users,
+        }
+    finally:
+        conn.close()
+
+
 # --- sync -----------------------------------------------------------------
 
 @app.post("/api/sync")

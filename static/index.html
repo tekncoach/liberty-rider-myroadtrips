@@ -90,9 +90,10 @@
   #userMenu button:hover { background: var(--row-hover); }
   #userMenu .menu-title { display: block; font-weight: 600; }
   #userMenu .menu-sub { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: normal; line-height: 1.35; }
-  /* Maintainer-only tool, hidden by default until JS confirms is_admin — see enterApp(). */
+  /* Maintainer-only tools, hidden by default until JS confirms is_admin — see enterApp(). */
   #purgeDataBtn { display: none; }
   #purgeDataBtn .menu-title { color: #b3261e; }
+  #adminBtn { display: none; }
   #syncstatus:not(:empty) { margin-top: 6px; }
   button {
     font-family: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--bg);
@@ -286,6 +287,29 @@
   #rideModalHead { padding: 14px 18px 4px; display: flex; align-items: center; gap: 10px; }
   #rideModalHead h2 { font-size: 15.5px; margin: 0; flex: 1; min-width: 0; }
   #rideModalHead button { white-space: nowrap; }
+
+  #adminModalBackdrop {
+    display: none; position: fixed; inset: 0; background: #00000066; z-index: 2000;
+    align-items: center; justify-content: center;
+  }
+  #adminModalBackdrop.visible { display: flex; }
+  #adminModal {
+    width: min(880px, 94vw); max-height: 88vh; display: flex; flex-direction: column;
+    background: var(--panel); border-radius: 12px; overflow: hidden; box-shadow: 0 8px 30px #00000040;
+  }
+  #adminModalHead { padding: 16px 20px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
+  #adminModalHead h2 { font-size: 16px; margin: 0; flex: 1; }
+  #adminSummary { display: flex; flex-wrap: wrap; gap: 26px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  #adminSummary .stat .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  #adminSummary .stat .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
+  #adminTableWrap { overflow: auto; padding: 4px 8px 12px; }
+  table.admin-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.admin-table th, table.admin-table td { text-align: left; padding: 8px 12px; white-space: nowrap; }
+  table.admin-table th { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
+  table.admin-table td { border-bottom: 1px solid var(--border); }
+  table.admin-table tr:hover td { background: var(--row-hover); }
+  table.admin-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.admin-table td.lrid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); }
   #rideModalSubtitle { padding: 0 18px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
   #rideModalDetailsHeader {
     display: flex; align-items: center; justify-content: space-between;
@@ -429,6 +453,10 @@
             <span class="menu-title">Revoir la visite guidée</span>
             <span class="menu-sub">Un rapide rappel des fonctionnalités principales</span>
           </button>
+          <button id="adminBtn">
+            <span class="menu-title">Admin — inscrits & usage</span>
+            <span class="menu-sub">Suivi des comptes créés, traces importées et activité. Visible uniquement sur ton compte.</span>
+          </button>
           <button id="purgeDataBtn" class="menu-danger">
             <span class="menu-title">Purger toutes mes données</span>
             <span class="menu-sub">Supprime tous les trajets/roadtrips/tags synchronisés localement — utile pour retester l'onboarding depuis zéro. Ton compte Liberty Rider n'est pas touché.</span>
@@ -484,6 +512,17 @@
         <button id="tourNextBtn" class="primary">Suivant</button>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="adminModalBackdrop">
+  <div id="adminModal">
+    <div id="adminModalHead">
+      <h2>Admin — inscrits &amp; usage</h2>
+      <button id="adminModalClose">Fermer</button>
+    </div>
+    <div id="adminSummary"></div>
+    <div id="adminTableWrap"></div>
   </div>
 </div>
 
