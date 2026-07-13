@@ -946,7 +946,14 @@ function setupRideModalDetailsToggle() {
 function renderDayList(trip) {
   const wrap = document.getElementById("daylist");
   const ridesById = Object.fromEntries(trip.rides.map((r) => [r.id, r]));
-  wrap.innerHTML = trip.days.map((d, i) => `
+  wrap.innerHTML = trip.days.map((d, i) => {
+    // Detail button placement: a day with a single ride is unambiguous, so
+    // the button lives on the day header (cleaner). A day with several
+    // distinct rides needs one button per stage — the day header can't tell
+    // which ride to open. (Multi-ride days are real, not merges: a merge
+    // shows as a single stage.)
+    const single = d.ride_ids.length === 1;
+    return `
     <div class="day-group">
       <div class="day-row" data-day-index="${i}">
         <span class="swatch" style="background:${COLORS[i % COLORS.length]}"></span>
@@ -955,6 +962,7 @@ function renderDayList(trip) {
         <div class="m">${fmtDuration(d.total_duration)} (dont ${fmtDuration(d.total_duration_without_pauses)} à moto)</div>
         <div class="m">${d.total_pause_count} pause(s)</div>
         <div class="m">${d.ride_ids.length} étape(s)</div>
+        ${single ? `<button class="detail-btn" data-ride="${d.ride_ids[0]}" title="Voir le détail du trajet (chronologie, altitude, carte)">🔍</button>` : ""}
       </div>
       <div class="day-rides">
         ${d.ride_ids.map((rideId) => {
@@ -970,15 +978,26 @@ function renderDayList(trip) {
                 <span class="meta-item"><span class="icon">⏱</span>${fmtDuration(r.duration)}</span>
               </span>
               <div class="day-ride-note" contenteditable="true" data-ride="${rideId}" data-placeholder="+ note…" title="${escapeHtml(r.notes || "")}">${escapeHtml(r.notes || "")}</div>
+              ${single ? "" : `<button class="detail-btn" data-ride="${rideId}" title="Voir le détail du trajet (chronologie, altitude, carte)">🔍</button>`}
               <button class="trash-btn" data-ride="${rideId}" title="Retirer du roadtrip">🗑</button>
             </div>
           `;
         }).join("")}
       </div>
     </div>
-  `).join("");
+  `;
+  }).join("");
   wrap.querySelectorAll(".day-row").forEach((row) => {
     row.addEventListener("click", () => focusDay(Number(row.dataset.dayIndex)));
+  });
+  wrap.querySelectorAll(".detail-btn").forEach((btn) => {
+    // Opens the full single-ride modal (its own overlay + map, independent
+    // of the roadtrip/tag view underneath) — closing it returns here
+    // unchanged. Handy to inspect one leg, e.g. its pause timeline.
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openRideModal(btn.dataset.ride);
+    });
   });
   wrap.querySelectorAll(".trash-btn").forEach((btn) => {
     btn.addEventListener("click", async (e) => {

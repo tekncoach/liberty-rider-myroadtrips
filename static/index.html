@@ -232,6 +232,7 @@
   .day-row .swatch { width: 10px; height: 10px; border-radius: 50%; flex: none; box-shadow: var(--shadow); }
   .day-row .date { font-weight: 600; width: 100px; flex: none; }
   .day-row .m { color: var(--muted); }
+  .day-row .detail-btn { margin-left: auto; }
   .day-rides { border-bottom: 1px solid var(--border); }
   .day-ride-row { padding: 4px 20px 4px 42px; font-size: 11px; display: flex; align-items: center; gap: 10px; }
   .day-ride-row:hover { background: var(--row-hover); }
@@ -250,8 +251,8 @@
   .day-ride-note:focus { white-space: normal; overflow: visible; }
   .day-ride-note:hover, .day-ride-note:focus { background: var(--bg); opacity: 1; }
   .day-ride-note:empty::before { content: attr(data-placeholder); color: var(--muted); font-style: italic; opacity: 0.7; }
-  .trash-btn { border: none; background: none; cursor: pointer; font-size: 12px; padding: 2px 4px; opacity: 0.5; }
-  .trash-btn:hover { opacity: 1; }
+  .trash-btn, .detail-btn { border: none; background: none; cursor: pointer; font-size: 12px; padding: 2px 4px; opacity: 0.5; flex: none; }
+  .trash-btn:hover, .detail-btn:hover { opacity: 1; }
 
   #empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
   .onboarding-cta { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; }
