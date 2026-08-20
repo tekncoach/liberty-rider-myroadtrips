@@ -15,7 +15,9 @@ liberty_client.py  →  sync.py  →  db.py (SQLite or Postgres)  →  app.py (F
   `refresh_id_token` (used server-side to silently renew an expired session's
   Liberty Rider token without asking the user to log in again).
 - **`sync.py`** — walks the API's pagination to pull all-or-new rides and
-  upserts them into the database, scoped to one user.
+  upserts them into the database, scoped to one user. Also answers
+  "anything new to import?" (`pending_status`) — see **Sync freshness**
+  below.
 - **`db.py`** — schema + connection helper + `upsert_ride`. No ORM; picks
   SQLite (default, single file, no setup) or Postgres (via `psycopg`, when
   `DATABASE_URL` is set — the shape hosted deployments use) at import time.
@@ -79,8 +81,8 @@ it can never hand one user's data to another.
 API call with the user's stored `bearer_token`; on a 401/403 it exchanges
 the stored `refresh_token` via `firebase_refresh.refresh_id_token` and
 persists the new tokens, transparently, before retrying. Used by
-`/api/sync` and `/api/auth/profile` so an expired token never surfaces to
-the user as an error during normal use.
+`/api/sync`, `/api/sync/status` and `/api/auth/profile` so an expired token
+never surfaces to the user as an error during normal use.
 
 ## Data model (`db.py`)
 
@@ -115,7 +117,8 @@ the user as an error during normal use.
   2026 alike).
 - **`sync_state`** — `(user_id, key)` → `value`; currently one key per user
   (`last_sync_max_start_time`) tracking the newest `startTime` synced so
-  far, for incremental syncs.
+  far, for incremental syncs. It records what the *last sync run* saw, which
+  is not the same as what Liberty Rider holds — see **Sync freshness**.
 - **`elevation_cache`** / **`mountain_pass_cache`** / **`ride_cols`** — see
   **Elevation profile & named cols** below.
 
@@ -313,6 +316,27 @@ first's stop location and the second's start location:
 
 Both are pure hints computed on every `GET /api/rides` response; nothing is
 grouped or merged automatically.
+
+## Sync freshness (`sync.py`, `/api/sync/status`)
+
+Whether there is anything left to import is a question about Liberty Rider,
+so it is asked of Liberty Rider. `sync.pending_status()` fetches the newest
+remote ride through `LibertyRiderClient.get_latest_ride()` — a deliberately
+tiny query (`id` + `startTime`, `first: 1`, no `detailedPolyline`) — and
+compares its `startTime` to the newest ride on file locally: the
+`last_sync_max_start_time` cursor, falling back to `MAX(rides.start_time)`
+when the cursor is missing (claimed orphan data, an interrupted first sync).
+Both sides are ISO-8601 UTC strings straight from the same API, so they
+compare lexicographically, exactly as `sync()` does while paging.
+
+Cost: two small GraphQL calls per check (the `_live_client_for` token probe
+plus the ride probe) against an undocumented, rate-limited API — so the
+frontend calls it only on app open and right after a sync, never on a timer.
+Everything the local database can answer on its own (ride counts, the "N
+trajets synchronisés" label) stays local; only the freshness claim costs a
+round-trip. An error there means "unknown", and the UI degrades to a plain
+local count rather than asserting "à jour" — which is the failure mode this
+whole path exists to prevent (see `docs/BUGFIX-sync-status.md`).
 
 ## Pagination quirk (`sync.py`)
 

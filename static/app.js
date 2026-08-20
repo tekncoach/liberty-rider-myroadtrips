@@ -157,6 +157,7 @@ async function enterApp(firstName, isAdmin) {
   switchTab(state.tab);
   await refresh();
   refreshProfile();
+  refreshSyncStatus();
   if (!localStorage.getItem("onboardingTourDone")) startOnboardingTour();
 }
 
@@ -172,22 +173,41 @@ async function refreshProfile() {
       document.getElementById("userAvatar").textContent = profile.first_name.charAt(0).toUpperCase();
       document.getElementById("userName").textContent = profile.first_name;
     }
-    document.getElementById("userSub").textContent = profileSubText(profile);
   } catch (e) {
     // Non-fatal — the greeting set at login is still shown.
   }
 }
 
-// manual_ride_count's exact definition on Liberty Rider's side isn't
-// confirmed to match stoppedRides 1:1 (see docs/API.md) — so the diff is
-// shown as an approximation ("≈"), not asserted as an exact pending count.
-function profileSubText(profile) {
-  const remote = profile.manual_ride_count;
+// "à jour" is a claim about Liberty Rider, so it comes from Liberty Rider:
+// /api/sync/status compares its newest ride to what we've imported. Local
+// counts alone can't tell "nothing new" from "nothing new that I know of",
+// which is what used to make this line say "à jour" with rides waiting.
+async function refreshSyncStatus() {
+  const sub = document.getElementById("userSub");
+  const syncBtn = document.getElementById("syncBtn");
+  try {
+    const status = await api("/api/sync/status");
+    sub.textContent = syncSubText(status);
+    syncBtn.classList.toggle("has-pending", !!status.pending);
+    syncBtn.title = status.pending
+      ? "De nouveaux trajets t'attendent sur Liberty Rider — clique pour les importer"
+      : "Synchroniser : récupère les trajets les plus récents";
+  } catch (e) {
+    // Liberty Rider unreachable (or token expired) — say what we do know
+    // locally rather than claiming either way.
+    sub.textContent = `${state.ungrouped.length} trajet(s) synchronisé(s)`;
+    syncBtn.classList.remove("has-pending");
+  }
+}
+
+function syncSubText(status) {
   const local = state.ungrouped.length;
-  if (remote == null) return `${local} trajet(s) synchronisé(s)`;
-  const diff = remote - local;
-  if (diff > 0) return `${remote} trajets Liberty Rider · ≈${diff} à synchroniser`;
-  return `${remote} trajets Liberty Rider · à jour`;
+  if (status.pending) {
+    return local
+      ? `${local} trajet(s) ici · des trajets à importer`
+      : "Des trajets à importer depuis Liberty Rider";
+  }
+  return `${local} trajet(s) synchronisé(s) · à jour`;
 }
 
 // --- sync ---
@@ -209,6 +229,7 @@ document.getElementById("purgeDataBtn").addEventListener("click", async () => {
     statusEl.textContent = "Données locales purgées.";
     await refresh();
     refreshProfile();
+    refreshSyncStatus();
   } catch (e) {
     statusEl.textContent = "Erreur : " + e.message;
   }
@@ -289,6 +310,7 @@ async function doSync(full) {
     statusEl.textContent = `${summary.upserted} nouveau(x) / ${summary.total_rides} au total.`;
     await refresh();
     refreshProfile();
+    refreshSyncStatus();
   } catch (e) {
     statusEl.textContent = "Erreur : " + e.message;
   } finally {

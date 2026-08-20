@@ -74,7 +74,14 @@
   #userName { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #userSub { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #userRow button { flex: none; padding: 6px 9px; }
-  #syncBtn { font-size: 15px; line-height: 1; padding: 5px 10px; }
+  #syncBtn { font-size: 15px; line-height: 1; padding: 5px 10px; position: relative; }
+  /* Rides waiting on Liberty Rider — the button is already accent-coloured,
+     so the cue is a badge dot rather than yet another colour. Set by
+     refreshSyncStatus() from /api/sync/status. */
+  #syncBtn.has-pending::after {
+    content: ""; position: absolute; top: -3px; right: -3px; width: 9px; height: 9px;
+    border-radius: 50%; background: #2ba85a; border: 2px solid var(--panel);
+  }
   #userMenuBtn { font-size: 13px; padding: 5px 8px; }
   #userMenu {
     display: none; position: absolute; bottom: 100%; right: 12px; margin-bottom: 6px; z-index: 5;

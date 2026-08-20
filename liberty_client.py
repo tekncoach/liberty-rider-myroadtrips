@@ -81,6 +81,23 @@ query CurrentUser {
 }
 """.strip()
 
+# Deliberately tiny — this one is used to answer "is there anything new to
+# import?" on every app open, so it asks for the newest ride's `startTime`
+# and nothing else (no detailedPolyline, no pauses). Same unbounded-call
+# semantics as sync.py's first page: without `before`, the server returns
+# the MOST RECENT rides, ascending.
+LATEST_RIDE_QUERY = """
+query LatestRide($first: Int) {
+  currentUser {
+    id
+    stoppedRides(first: $first) {
+      id
+      startTime
+    }
+  }
+}
+""".strip()
+
 
 class LibertyRiderClient:
     def __init__(self, token: str):
@@ -134,6 +151,26 @@ class LibertyRiderClient:
             if data.get("data") is not None:
                 return data["data"]["currentUser"]
         raise RuntimeError(f"GraphQL error: {data.get('errors')}")
+
+    def get_latest_ride(self) -> dict | None:
+        """The single most recent stopped ride (`{id, startTime}`), or None
+        if the account has none — the cheap probe behind /api/sync/status."""
+        payload = {
+            "operationName": "LatestRide",
+            "variables": {"first": 1},
+            "query": LATEST_RIDE_QUERY,
+        }
+        resp = _post_with_retry(self.session, API_URL, payload, timeout=15)
+        data = resp.json()
+        if data.get("data") is None:
+            raise RuntimeError(f"GraphQL error: {data.get('errors')}")
+        rides = data["data"]["currentUser"]["stoppedRides"] or []
+        if not rides:
+            return None
+        # The server has been seen to ignore the requested `first` and hand
+        # back a whole page (see sync.py's docstring), so pick the newest of
+        # whatever came back instead of assuming a single-element list.
+        return max(rides, key=lambda ride: ride["startTime"] or "")
 
     def download_gpx(self, gpx_export_url: str) -> bytes:
         resp = self.session.get(gpx_export_url, timeout=30)
