@@ -3,12 +3,17 @@
 Réponse à `SECURITY_AUDIT.md` (audit du 2026-08-20, 24 findings).
 Travaux réalisés par `teamlead` sur la branche **`chore/security-hardening`**,
 dans un worktree isolé (`../.worktrees/security-hardening`) pour ne pas
-entrer en collision avec la branche `fix/sync-status` ni avec les autres
-agents travaillant sur le dépôt.
+entrer en collision avec les autres agents travaillant sur le dépôt.
+La branche est **rebasée sur `main`** après le merge de `fix/sync-status`.
 
 **Rien n'a été poussé, aucune PR n'a été ouverte, aucune modification n'a été
 appliquée à l'infrastructure live** (VM exe.dev, Postgres de production,
-réglages GitHub). Trois commits locaux, 94 tests verts, `ruff check` propre.
+réglages GitHub). Six commits locaux, **114 tests verts**, `ruff check`
+propre.
+
+Le contenu a été **re-audité de façon contradictoire** par `secaudit`, qui a
+relevé 7 écarts (dont un bloquant) — tous corrigés, voir « Reprises après
+contre-audit » plus bas.
 
 ---
 
@@ -97,15 +102,51 @@ plusieurs workers (noté dans le code).
 | **VM-01 / VM-03** | **Critical** / Medium | **Fichier de référence non appliqué** : `deploy/roadtrips.service`, unit durcie (`NoNewPrivileges`, `ProtectSystem=strict`, `SystemCallFilter=@system-service`, `CapabilityBoundingSet=` vide, `UMask=0077`…), bind sur `127.0.0.1`, `--forwarded-allow-ips`, et les prérequis dans l'en-tête du fichier | `deploy/roadtrips.service` |
 
 **Outillage — deux choix explicites** :
-- `ruff format --check` **n'est pas** dans la CI. Reformater tout le dépôt
-  produirait un diff massif qui entrerait en collision avec `fix/sync-status`
-  et la future branche de partage public. À faire dans un commit isolé une
-  fois ces branches mergées (c'est l'ordre que recommande l'audit lui-même).
+- `ruff format --check` **n'est pas** dans la CI (vérifié : l'étape a bien
+  été retirée, elle y était par erreur — cf. R-1). Reformater tout le dépôt
+  change **20 fichiers sur 29** et entrerait en collision avec la branche de
+  partage public en cours. À faire dans un commit isolé une fois ces
+  branches mergées, en réactivant **dans le même commit** l'étape CI et la
+  ligne `ruff format` du hook (c'est l'ordre que recommande l'audit).
 - Les faux positifs `ruff` sont **argumentés, pas noyés** : `B008` est
   l'idiome FastAPI (`Depends(...)` en défaut) ; `S608` est restreint à
   `app.py`/`db.py`, où chaque f-string n'interpole qu'un *nombre* de
   placeholders, jamais une valeur — le reste du dépôt reste vérifié. Les
   vrais signalements ont été corrigés (chaînage `raise … from e`).
+
+### Reprises après contre-audit (`secaudit`) — commits `e4cb369`, `b6921d3`
+
+| # | Écart | Correctif |
+|---|---|---|
+| **R-1** | *Bloquant* : `ruff format --check` **était** dans `ci.yml:32` alors que le dépôt n'a jamais été formaté → CI rouge au premier push (et mon message de commit affirmait le contraire) | Étape retirée, différée avec le reformatage qu'elle vérifie |
+| **R-2** | APP-03 n'était fermé que pour les sessions futures : `expires_at IS NULL` était accepté indéfiniment **et** ignoré par la purge → session immortelle et impurgeable, alors que le docstring prétendait l'inverse | Backfill depuis `created_at` (SQLite + migration `0002`), docstring corrigé |
+| **R-3** | `delete_expired_sessions()` n'était appelée que dans un test → table sans fin | Câblée au démarrage **et** au login |
+| **R-4** | `delete_user_sessions()` : écrite, documentée, branchée nulle part | Expose `POST /api/auth/logout-all` |
+| **R-5** | Effacer les jetons du **compte** au logout cassait la synchro des autres appareils connectés | Jetons effacés seulement quand la **dernière** session disparaît ; la déconnexion globale devient un geste explicite (R-4) |
+| **R-6** | L'origine attendue était reconstruite depuis `request.url.scheme` → un proxy cessant de transmettre `X-Forwarded-Proto` aurait mis **toutes** les écritures en 403 | Comparaison sur l'**hôte** seul ; `ALLOWED_ORIGIN` épingle l'origine complète si défini |
+| **R-7** | Le dict du throttle ne purgeait que la clé consultée → un spray sur N emails laissait N entrées, croissance mémoire non bornée | Balayage global périodique |
+
+**Trouvé au passage, par le hook de pré-commit et non par les tests** : la
+purge de démarrage était appelée depuis le `lifespan` mais **jamais
+définie**. Le `lifespan` ne s'exécute pas sous `TestClient` sans bloc `with`,
+donc 102 tests verts masquaient un `NameError` au premier démarrage réel.
+Corrigé et vérifié avec un `TestClient` en gestionnaire de contexte.
+
+`secaudit` a par ailleurs **validé** l'écart assumé sur `SameSite=lax` +
+vérification d'`Origin`, et confirmé par recalcul que les deux hashes SRI
+correspondent aux fichiers réellement servis par unpkg.
+
+### Hook de pré-commit
+
+`hooks/pre-commit` (sur `main`, commit `919b6f5`) lance `ruff check --fix`
+sur les fichiers Python indexés, ré-indexe le résultat, et ne bloque que sur
+ce que ruff ne peut pas corriger seul. Activé par
+`git config core.hooksPath "$(pwd)/hooks"` en chemin **absolu**, pour que
+tous les worktrees en bénéficient — y compris ceux dont la branche ne porte
+pas encore le fichier. Un fichier ayant des modifications non indexées est
+linté mais **pas** ré-indexé : emporter du travail non indexé dans un commit
+serait pire que le problème corrigé. `ruff format` y est commenté, pour la
+même raison que l'étape CI.
 
 ### Tests
 
@@ -117,8 +158,13 @@ purge des sessions expirées, effacement des jetons à la déconnexion,
 `ride_ids` vide accepté sans requête cassée, texte surdimensionné rejeté,
 `/docs` absent en production.
 
-**Suite complète : 94 tests verts** (82 existants + 12), `ruff check`
-propre.
+Puis 8 tests de plus pour les reprises R-2 à R-7 (backfill des sessions,
+purge au login, déconnexion d'un appareil sans casser les autres,
+`logout-all`, `Origin` insensible au scheme, `ALLOWED_ORIGIN`, bornage du
+dict de throttle).
+
+**Suite complète : 114 tests verts** (82 d'origine + 12 du fix sync + 20
+ajoutés ici), `ruff check` propre.
 
 ---
 
@@ -206,7 +252,7 @@ concernés, dont deux tiers (donc enjeu RGPD, pas seulement technique).
 | **GH-01** (activations) | Non appliqué | Réglages GitHub : commandes fournies, déclenchement laissé au propriétaire |
 | **APP-01** (chiffrement) | Ouvert | Clé + migration de données de production + rotation |
 | **APP-05** (rate limiting) | Partiel | Le plafond de pics est posé ; le rate limiting par utilisateur sur `/cols`, `/elevation`, `/sync` reste à faire, tout comme le passage de `/cols` en POST (un GET qui écrit) — changement d'API à coordonner avec le frontend |
-| **APP-05** (`/api/sync/status`) | À reprendre plus tard | L'endpoint n'existe pas sur `main` : il arrive avec `fix/sync-status`. À plafonner **après** le merge de cette branche. Il n'est appelé qu'à l'ouverture et après un sync — jamais en polling |
+| **APP-05** (`/api/sync/status`) | Ouvert, désormais faisable | `fix/sync-status` est mergé dans `main` et la branche est rebasée dessus : le rate limiting par utilisateur de cet endpoint peut maintenant être écrit ici. Non fait pour l'instant — il n'est appelé qu'à l'ouverture de l'app et après un sync, jamais en polling |
 | **SC-01** (vendoring Leaflet) | Partiel | SRI posé, ce qui ferme le risque d'altération. Vendorer supprimerait en plus la dépendance réseau tierce — ~160 Ko à committer, décision de goût à trancher |
 | **APP-10** (observabilité) | Partiel | Journalisation structurée + traces d'audit complètes (purge, accès admin) restent à faire |
 | **SC-02** (lock des transitives) | Partiel | Passer à `uv lock` / `pip-compile --generate-hashes` est un changement d'outillage à part entière |
