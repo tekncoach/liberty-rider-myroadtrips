@@ -149,6 +149,17 @@ it has to be a decision someone makes, not a side effect.
   now thinks of as one ride. `api_merge_rides` cuts those links; the merged
   ride can be re-shared. `purge_user_data` deletes share rows with the data
   they point at.
+- **The same presentation as the modal** — the public page shows what the
+  owner sees when they open a ride: the trajet/pause chronology, the time
+  breakdown, the estimated elevation profile, distance and altitude. That is
+  the thing being shared, so it is rendered by the *same code*:
+  `renderRideTimeline`, `renderElevationProfile` and the chart tooltip moved
+  into `static/shared.js`, and the class-based CSS behind them into
+  `static/shared.css`, rather than being copied into a second implementation
+  that would drift. What stays behind is what is private: notes and tags.
+  The elevation profile comes from its own public endpoint, computed from
+  the truncated track; cols do not, since Overpass lookups (and the db write
+  behind them) are not something an unauthenticated URL should set off.
 - **The page** — `static/share.html` + `static/share.js`, standalone, no
   session, no `state`. Formatting and polyline decoding come from
   `static/shared.js`, which the logged-in app loads too (two plain `<script>`

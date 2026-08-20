@@ -62,3 +62,148 @@ function decodePolylines(encodedList) {
   }
   return points;
 }
+
+
+// Wires the shared hover tooltip for a mini-chart (km/day, pause fatigue).
+// Bars carry their tooltip text in data-tooltip; this just positions the
+// shared floating label above whichever bar is hovered.
+function attachMiniChartTooltip(container, selector = ".mini-bar") {
+  const tooltip = container.querySelector(".mini-chart-tooltip");
+  container.querySelectorAll(selector).forEach((bar) => {
+    bar.addEventListener("mouseenter", () => {
+      const barRect = bar.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      tooltip.textContent = bar.dataset.tooltip;
+      tooltip.style.left = `${barRect.left - containerRect.left + barRect.width / 2}px`;
+      tooltip.style.top = `${barRect.top - containerRect.top}px`;
+      tooltip.classList.add("visible");
+    });
+    bar.addEventListener("mouseleave", () => tooltip.classList.remove("visible"));
+  });
+}
+
+// Shared by pause dots and col markers on the elevation chart: clicking a
+// marker with data-lat/data-lon flies the ride's map to that spot. `getMap`
+// is a function rather than the map itself: on the logged-in side the chart
+// is wired while the modal's map is still being built.
+function wireChartMarkerZoom(markers, getMap) {
+  markers.forEach((marker) => {
+    marker.addEventListener("click", () => {
+      const map = getMap();
+      if (!map || !marker.dataset.lat) return;
+      map.flyTo([Number(marker.dataset.lat), Number(marker.dataset.lon)], 14, { duration: 0.6 });
+    });
+  });
+}
+
+// Single-hue magnitude chart (km/day) — days are a comparison of one
+// measure, not distinct series, so all bars share the accent color; the
+// currently map-focused day (if any) is emphasized, the rest dimmed, same
+// as the day's polyline on the map above. `fillGaps` is true for a roadtrip
+// (a real continuous date span — a rest day should show as an empty slot)
+// and false for a tag (which has no span semantics — filling gaps between
+// e.g. a 2022 and a 2026 ride would mean thousands of meaningless bars).
+
+
+// Fatigue proxy: riding vs. paused, alternating, each segment's width
+// proportional to its real duration (not indexed by pause number, so a long
+// pause followed by a short ride leg is directly visible as shapes, not
+// just two adjacent bar heights). Segments are precomputed server-side
+// (see _merged_ride_timeline in app.py) — merged (tracking-split) rides
+// need each member ride's own pause/resume events resolved independently
+// before concatenating, which needs each member's own start/duration that
+// only the backend has; ride.timeline is already the final [{type, start,
+// end}, ...] list, this just renders it.
+function renderRideTimeline(ride, el) {
+  const segments = (ride.timeline || []).map((s) => ({ ...s, start: new Date(s.start), end: new Date(s.end) }));
+  if (!segments.length) {
+    el.innerHTML = "";
+    return;
+  }
+  const totalMs = segments.reduce((sum, s) => sum + (s.end - s.start), 0) || 1;
+  const segHtml = segments.map((s) => {
+    const pct = ((s.end - s.start) / totalMs) * 100;
+    const label = s.type === "ride" ? "Trajet" : "Pause";
+    const tooltipText = `${label} — ${fmtTime(s.start)} → ${fmtTime(s.end)} — ${fmtDuration((s.end - s.start) / 1000)}`;
+    return `<div class="ride-timeline-seg ${s.type}" style="flex-basis:${pct}%" data-tooltip="${tooltipText}"></div>`;
+  }).join("");
+  el.innerHTML = `
+    <div class="l">chronologie du trajet</div>
+    <div class="ride-timeline-legend">
+      <span><span class="swatch ride"></span>Trajet</span>
+      <span><span class="swatch pause"></span>Pause</span>
+    </div>
+    <div class="ride-timeline-track">${segHtml}</div>
+    <div class="ride-timeline-labels">
+      <span>${fmtTime(segments[0].start)}</span>
+      <span>${fmtTime(segments[segments.length - 1].end)}</span>
+    </div>
+    <div class="mini-chart-tooltip"></div>
+  `;
+  attachMiniChartTooltip(el, ".ride-timeline-seg");
+}
+
+
+// Draws the elevation profile into `el` and returns { x, y, svg } — the
+// scale functions included, so a caller with extra markers to place (the
+// app's col triangles) can put them on the same axes. Returns null when
+// there is nothing worth drawing. Fetching is the caller's job: the app
+// reads the private endpoint, the share page the public one.
+function renderElevationProfile(el, data, { getMap, label } = {}) {
+  const profile = (data.profile || []).filter((p) => p.elevation != null);
+  if (profile.length < 2) return null;
+  const pauses = (data.pauses || []).filter((p) => p.elevation != null);
+
+  // A square 0-100 viewBox would distort circles into ellipses once
+  // stretched to a wide, short chart — approximate the real rendered box
+  // (matches #rideModal's width minus padding) so pause/hover dots stay
+  // circular instead of measuring the DOM for a "fun" optional feature.
+  const VIEW_W = 684;
+  const VIEW_H = 70;
+  const maxDistance = profile[profile.length - 1].distance_km || 1;
+  const elevations = profile.map((p) => p.elevation);
+  const minElev = Math.min(...elevations);
+  const maxElev = Math.max(...elevations);
+  const elevRange = maxElev - minElev || 1;
+  const x = (km) => (km / maxDistance) * VIEW_W;
+  const y = (elev) => VIEW_H - ((elev - minElev) / elevRange) * VIEW_H;
+
+  const linePoints = profile.map((p) => `${x(p.distance_km)},${y(p.elevation)}`);
+  const fillPoints = [`${x(profile[0].distance_km)},${VIEW_H}`, ...linePoints, `${x(profile[profile.length - 1].distance_km)},${VIEW_H}`];
+  const hitCircles = profile.map((p) =>
+    `<circle class="elevation-hit" cx="${x(p.distance_km)}" cy="${y(p.elevation)}" r="3"
+       data-tooltip="${p.distance_km.toFixed(1)} km — ${Math.round(p.elevation)} m"></circle>`
+  ).join("");
+  const pauseDots = pauses.map((p) =>
+    `<circle class="elevation-pause-dot" cx="${x(p.distance_km)}" cy="${y(p.elevation)}" r="2.5"
+       data-tooltip="Pause — ${p.distance_km.toFixed(1)} km — ${Math.round(p.elevation)} m"
+       data-lat="${p.lat}" data-lon="${p.lon}"></circle>`
+  ).join("");
+
+  el.innerHTML = `
+    <div class="l">${label || "altitude (estimée)"}</div>
+    <svg class="elevation-chart" viewBox="0 0 ${VIEW_W} ${VIEW_H}" preserveAspectRatio="none" overflow="visible">
+      <polygon class="elevation-fill" points="${fillPoints.join(" ")}"></polygon>
+      <polyline class="elevation-line" points="${linePoints.join(" ")}"></polyline>
+      ${hitCircles}
+      ${pauseDots}
+    </svg>
+    <div class="elevation-labels">
+      <span>0 km</span>
+      <span>${maxDistance.toFixed(1)} km</span>
+    </div>
+    <div class="mini-chart-tooltip"></div>
+  `;
+  attachMiniChartTooltip(el, ".elevation-hit, .elevation-pause-dot");
+  wireChartMarkerZoom(el.querySelectorAll(".elevation-pause-dot"), getMap || (() => null));
+  return { x, y, svg: el.querySelector(".elevation-chart") };
+}
+
+
+// The "+556 / -544 m" tile — both sides show the same one.
+function setElevationGain(el, data) {
+  if (!el) return;
+  el.textContent = data.elevation_gain != null
+    ? `+${Math.round(data.elevation_gain)} / -${Math.round(data.elevation_loss)} m`
+    : "–";
+}

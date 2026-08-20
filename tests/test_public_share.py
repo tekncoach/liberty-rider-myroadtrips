@@ -6,9 +6,11 @@ scoped by user), and the public payload is an allow-list rather than a
 filtered private one. See docs/PLAN-public-share.md.
 """
 import polyline as polyline_lib
+import pytest
 from conftest import make_event, make_ride
 
 import db as db_module
+import elevation as elevation_module
 
 # Exactly what a visitor with no account is allowed to receive. Written out
 # here rather than imported from app.py on purpose: adding a field to the
@@ -319,6 +321,94 @@ def test_a_pause_taken_near_home_is_dropped(client, make_client, login_as):
 
     assert len(pauses) == 1
     assert round(pauses[0]["lat"], 3) == 48.818
+
+
+# --- the elevation profile ----------------------------------------------
+
+@pytest.fixture
+def fake_elevations(monkeypatch):
+    """open-elevation is a real external API; the suite never calls it.
+    Altitude climbs with latitude here, so a profile is always non-flat."""
+    def _fake(conn, points):
+        return [round((lat - 48.0) * 10000) for lat, _lon in points]
+
+    monkeypatch.setattr(elevation_module, "get_elevations", _fake)
+
+
+def test_a_visitor_gets_the_same_elevation_profile_as_the_owner(
+    client, make_client, login_as, fake_elevations
+):
+    login_as(client, "user-1")
+    _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z", detailed_polyline=LONG_TRACK)
+    token = _share(client, "r1")["token"]
+
+    body = make_client().get(f"/api/public/rides/{token}/elevation").json()
+
+    assert len(body["profile"]) > 2
+    assert body["elevation_gain"] is not None
+    assert set(body) == {"profile", "pauses", "elevation_gain", "elevation_loss"}
+
+
+def test_the_public_profile_is_built_from_the_truncated_track(
+    client, make_client, login_as, fake_elevations
+):
+    """Otherwise the chart hands back the endpoint metres the map withholds:
+    the altitude at the very first track point is the altitude at the
+    rider's door."""
+    login_as(client, "user-1")
+    _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z", detailed_polyline=LONG_TRACK)
+    token = _share(client, "r1")["token"]
+
+    private = client.get("/api/rides/r1/elevation").json()
+    public = make_client().get(f"/api/public/rides/{token}/elevation").json()
+
+    # The public profile starts higher up the hill and ends lower down it —
+    # both ends of the private one are missing from it.
+    assert public["profile"][0]["elevation"] > private["profile"][0]["elevation"]
+    assert public["profile"][-1]["elevation"] < private["profile"][-1]["elevation"]
+    assert public["profile"][-1]["distance_km"] < private["profile"][-1]["distance_km"]
+
+
+def test_a_pause_near_home_is_absent_from_the_public_profile(
+    client, make_client, login_as, fake_elevations
+):
+    login_as(client, "user-1")
+    _seed_ride(
+        "user-1", "r1", "2024-01-01T10:00:00Z",
+        detailed_polyline=LONG_TRACK,
+        pauses=[
+            make_event("2024-01-01T10:01:00Z", lat=48.8001, lon=2.30),
+            make_event("2024-01-01T10:30:00Z", lat=48.818, lon=2.30),
+        ],
+    )
+    token = _share(client, "r1")["token"]
+
+    public = make_client().get(f"/api/public/rides/{token}/elevation").json()
+
+    assert len(public["pauses"]) == 1
+    assert len(client.get("/api/rides/r1/elevation").json()["pauses"]) == 2
+
+
+def test_the_elevation_profile_needs_a_live_token_too(client, make_client, login_as, fake_elevations):
+    login_as(client, "user-1")
+    _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z", detailed_polyline=LONG_TRACK)
+    token = _share(client, "r1")["token"]
+    client.delete("/api/rides/r1/share")
+
+    visitor = make_client()
+    assert visitor.get(f"/api/public/rides/{token}/elevation").status_code == 404
+    assert visitor.get("/api/public/rides/PZWfKvSdQqLmXbNrTgHjAw/elevation").status_code == 404
+    assert visitor.get("/api/public/rides/r1/elevation").status_code == 404
+
+
+def test_cols_are_not_offered_publicly(client, make_client, login_as):
+    """That endpoint is one Overpass call per candidate peak AND writes to
+    the database — not something an unauthenticated URL should set off."""
+    login_as(client, "user-1")
+    _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z", detailed_polyline=LONG_TRACK)
+    token = _share(client, "r1")["token"]
+
+    assert make_client().get(f"/api/public/rides/{token}/cols").status_code == 404
 
 
 # --- ownership ----------------------------------------------------------

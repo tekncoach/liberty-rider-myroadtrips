@@ -1146,11 +1146,18 @@ def api_ride_detail(ride_id: str, request: Request, user=Depends(get_session_use
         conn.close()
 
 
-def _ride_track_samples(conn, row):
+def _ride_track_samples(conn, row, truncate: bool = False):
     """Decoded polyline, cumulative distance per point, and ~60 indices
     sampled evenly by distance — shared by /elevation and /cols so both
-    resample the same track the same way."""
+    resample the same track the same way.
+
+    `truncate=True` is the public path: the profile is then built from the
+    same trimmed track the public map draws, so the chart can't hand back
+    the endpoint metres the map withholds — the altitude at the very first
+    point of a ride is the altitude at the rider's door."""
     points, pauses = _merged_polyline_and_pauses(conn, row)
+    if truncate:
+        points, pauses, _ = _truncate_track(points, pauses)
     if not points:
         return points, pauses, [], []
     cum = [0.0]
@@ -1174,47 +1181,51 @@ def api_ride_elevation(ride_id: str, user=Depends(get_session_user)):
     always renders instantly, even on a ride with no cols at all."""
     conn = db.connect()
     try:
-        row = _get_owned_ride(conn, ride_id, user["id"])
-        points, pauses, cum, sample_idx = _ride_track_samples(conn, row)
-        if not points:
-            return {"profile": [], "pauses": [], "elevation_gain": None, "elevation_loss": None}
-
-        valid_pauses = [p for p in pauses if p["lat"] is not None and p["lon"] is not None]
-        pause_idx = [_nearest_point_index(points, p["lat"], p["lon"]) for p in valid_pauses]
-
-        all_points = [points[i] for i in sample_idx] + [points[i] for i in pause_idx]
-        elevations = elevation.get_elevations(conn, all_points)
-
-        profile = [
-            {"distance_km": round(cum[i], 2), "elevation": elevations[k]}
-            for k, i in enumerate(sample_idx)
-        ]
-        pause_markers = [
-            {
-                "distance_km": round(cum[i], 2),
-                "elevation": elevations[len(sample_idx) + k],
-                "automatic": valid_pauses[k]["automatic"],
-                "lat": valid_pauses[k]["lat"],
-                "lon": valid_pauses[k]["lon"],
-            }
-            for k, i in enumerate(pause_idx)
-        ]
-        # D+/D- summed over the ~60-point resampled profile, not raw GPS —
-        # already an estimate (open-elevation, not measured), so this is an
-        # approximation of an approximation; good enough for a fun stat, not
-        # a precise instrument reading.
-        known_elevations = [p["elevation"] for p in profile if p["elevation"] is not None]
-        gain = sum(max(b - a, 0) for a, b in zip(known_elevations, known_elevations[1:]))
-        loss = sum(max(a - b, 0) for a, b in zip(known_elevations, known_elevations[1:]))
-
-        return {
-            "profile": profile,
-            "pauses": pause_markers,
-            "elevation_gain": round(gain) if known_elevations else None,
-            "elevation_loss": round(loss) if known_elevations else None,
-        }
+        return _elevation_payload(conn, _get_owned_ride(conn, ride_id, user["id"]))
     finally:
         conn.close()
+
+
+def _elevation_payload(conn, row, truncate: bool = False) -> dict:
+    """The body of /elevation, shared with its public counterpart."""
+    points, pauses, cum, sample_idx = _ride_track_samples(conn, row, truncate)
+    if not points:
+        return {"profile": [], "pauses": [], "elevation_gain": None, "elevation_loss": None}
+
+    valid_pauses = [p for p in pauses if p["lat"] is not None and p["lon"] is not None]
+    pause_idx = [_nearest_point_index(points, p["lat"], p["lon"]) for p in valid_pauses]
+
+    all_points = [points[i] for i in sample_idx] + [points[i] for i in pause_idx]
+    elevations = elevation.get_elevations(conn, all_points)
+
+    profile = [
+        {"distance_km": round(cum[i], 2), "elevation": elevations[k]}
+        for k, i in enumerate(sample_idx)
+    ]
+    pause_markers = [
+        {
+            "distance_km": round(cum[i], 2),
+            "elevation": elevations[len(sample_idx) + k],
+            "automatic": valid_pauses[k]["automatic"],
+            "lat": valid_pauses[k]["lat"],
+            "lon": valid_pauses[k]["lon"],
+        }
+        for k, i in enumerate(pause_idx)
+    ]
+    # D+/D- summed over the ~60-point resampled profile, not raw GPS —
+    # already an estimate (open-elevation, not measured), so this is an
+    # approximation of an approximation; good enough for a fun stat, not
+    # a precise instrument reading.
+    known_elevations = [p["elevation"] for p in profile if p["elevation"] is not None]
+    gain = sum(max(b - a, 0) for a, b in zip(known_elevations, known_elevations[1:]))
+    loss = sum(max(a - b, 0) for a, b in zip(known_elevations, known_elevations[1:]))
+
+    return {
+        "profile": profile,
+        "pauses": pause_markers,
+        "elevation_gain": round(gain) if known_elevations else None,
+        "elevation_loss": round(loss) if known_elevations else None,
+    }
 
 
 @app.get("/api/rides/{ride_id}/cols")
@@ -1912,6 +1923,31 @@ def _render_share_page(title: str, description: str, url: str) -> str:
 <meta property="og:url" content="{attr(url)}" />
 <meta name="twitter:card" content="summary" />"""
     return (STATIC / "share.html").read_text(encoding="utf-8").replace("<!--HEAD_META-->", meta)
+
+
+@app.get("/api/public/rides/{token}/elevation")
+def api_public_ride_elevation(token: str, response: Response):
+    """The shared ride's elevation profile — the same chart the owner sees
+    in the modal, computed from the TRUNCATED track (see
+    `_ride_track_samples`) so it can't give back the endpoint metres the
+    map withholds.
+
+    Separate from the ride payload, and fetched after the page has already
+    drawn, for the same reason the private one is: open-elevation can be
+    slow on a track nobody has looked at yet, and a slow profile must never
+    hold up the map. The lookups it triggers are bounded — ~60 resampled
+    points per ride, cached forever by coordinate (`elevation_cache`), so a
+    visitor reloading the page costs nothing after the first view.
+
+    Cols are deliberately NOT offered publicly: that endpoint is one
+    Overpass call per candidate peak and writes to the database, which is
+    not something an unauthenticated URL should be able to set off."""
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    conn = db.connect()
+    try:
+        return _elevation_payload(conn, _get_shared_ride(conn, token), truncate=True)
+    finally:
+        conn.close()
 
 
 @app.get("/t/{token}")

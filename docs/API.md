@@ -163,6 +163,18 @@ Notably **absent**, all deliberately: the ride id, `notes`, `tags`,
 in all three cases: a distinct status would confirm that a token once
 existed. Responses carry `X-Robots-Tag: noindex, nofollow`.
 
+### `GET /api/public/rides/{token}/elevation`
+The shared ride's estimated elevation profile — same shape as
+`GET /api/rides/{id}/elevation`, computed from the **truncated** track so it
+can't give back the endpoint metres the map withholds, and with pauses
+inside either truncation radius already dropped. Fetched after the page has
+drawn, like the private one, because open-elevation can be slow on a track
+nobody has looked at yet. Same 404 rules and `X-Robots-Tag` as above.
+
+There is deliberately **no public `/cols`**: that endpoint is one Overpass
+call per candidate peak and writes to the database, which no
+unauthenticated URL should be able to set off.
+
 ### `GET /t/{token}`
 The public page itself (`static/share.html`), with this ride's `<title>` and
 Open Graph tags injected so a link pasted into a chat previews as the ride.

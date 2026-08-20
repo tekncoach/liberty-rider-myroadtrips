@@ -13,6 +13,7 @@
      own <title> and Open Graph tags, so a link pasted into a chat previews
      as the ride rather than as a generic page. -->
 <!--HEAD_META-->
+<link rel="stylesheet" href="/static/shared.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
       crossorigin="anonymous" referrerpolicy="no-referrer" />
@@ -42,10 +43,15 @@
   header h1 { font-size: 20px; margin: 0 0 4px; line-height: 1.25; }
   header p { margin: 0; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-  #stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-  .stat { background: var(--panel); padding: 10px 12px; }
-  .stat .v { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .stat .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+  /* Same reading order as the ride modal in the app: each chart sits right
+     above the numbers it explains — the trajet/pause chronology over the
+     time breakdown, the altitude profile over distance and elevation. */
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+  .panel-section { padding: 12px 16px; }
+  .panel-section + .panel-section { border-top: 1px solid var(--border); }
+  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 10px; margin-top: 10px; }
+  @media (max-width: 560px) { .stat-row { grid-template-columns: repeat(2, 1fr); } }
+  .mini-chart { max-width: none; }
 
   #map { flex: 1; min-height: 340px; border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; background: var(--panel); }
   .leaflet-container { background: var(--panel); font-family: inherit; }
@@ -80,7 +86,16 @@
     <h1 id="rideName"></h1>
     <p id="rideSubtitle"></p>
   </header>
-  <div id="stats"></div>
+  <div class="panel">
+    <div class="panel-section">
+      <div id="timeline" class="mini-chart"></div>
+      <div id="statsTime" class="stat-row"></div>
+    </div>
+    <div class="panel-section">
+      <div id="elevation" class="mini-chart"></div>
+      <div id="statsTrack" class="stat-row"></div>
+    </div>
+  </div>
   <div id="map"></div>
   <p id="notice"></p>
 </div>

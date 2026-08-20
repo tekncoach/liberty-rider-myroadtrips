@@ -568,6 +568,17 @@ Le plan a été suivi tel quel, à quatre détails près :
 4. **Étape 6** — faite dans le même lot : balises Open Graph, pastille 🔗 dans
    la liste, docs. Le plan la donnait comme optionnelle.
 
+5. **Contenu de la page publique** — le plan mettait le profil altimétrique
+   « hors périmètre v1 ». Le propriétaire a demandé l'inverse : la page
+   publique doit reprendre la présentation du modal (chronologie + profil
+   d'altitude + les deux blocs de statistiques). Fait, avec un endpoint
+   public dédié calculé sur la trace **tronquée** ; seuls les cols restent
+   dehors (Overpass + écriture en base depuis une URL non authentifiée).
+   Les notes et les tags restent privés, comme prévu.
+6. **Emplacement du bouton de partage** — d'abord dans l'en-tête du modal,
+   déplacé sur demande du propriétaire dans un menu « ⋯ » qui contient aussi
+   le GPX : rien n'est visible tant qu'on ne l'ouvre pas.
+
 Ce que le plan avait sous-estimé : rien de bloquant. Le modal n'a pas eu à être
 refactorisé, comme prévu — seules les fonctions déjà pures ont bougé dans
 `static/shared.js`.

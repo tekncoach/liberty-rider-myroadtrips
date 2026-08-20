@@ -670,6 +670,7 @@ function closeRideModal() {
   rideModalBackdrop.classList.remove("visible");
   releaseDialog(document.getElementById("rideModal"));
   document.getElementById("rideModalShare").hidden = true;
+  document.getElementById("rideModalMenu").classList.remove("open");
   if (state.rideModalMap) {
     state.rideModalMap.remove();
     state.rideModalMap = null;
@@ -700,7 +701,7 @@ async function openRideModal(id) {
   `;
   document.getElementById("rideModalGpx").href = `/api/rides/${ride.id}/export.gpx`;
   setupRideModalDetailsToggle();
-  renderRideTimeline(ride);
+  renderRideTimeline(ride, document.getElementById("rideModalTimeline"));
   renderElevationChart(ride.id);
   renderRideModalTags(ride.tags || []);
   renderRideModalMerge(ride);
@@ -709,6 +710,7 @@ async function openRideModal(id) {
   // public link (see the `share` field on /api/rides/{id}).
   state.rideShare = ride.share || null;
   document.getElementById("rideModalShare").hidden = true;
+  rideModalMenu.classList.remove("open");
   const notesEl = document.getElementById("rideModalNotesText");
   notesEl.textContent = ride.notes || "";
   rideModalBackdrop.classList.add("visible");
@@ -822,8 +824,19 @@ async function onTagsChanged(rideId, tags) {
 // docs/PLAN-public-share.md.
 
 const rideModalShare = document.getElementById("rideModalShare");
+const rideModalMenu = document.getElementById("rideModalMenu");
+
+document.getElementById("rideModalMenuBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  rideModalMenu.classList.toggle("open");
+});
+// Same dismissal as #userMenu: any click outside closes it.
+document.addEventListener("click", (e) => {
+  if (!rideModalMenu.contains(e.target)) rideModalMenu.classList.remove("open");
+});
 
 document.getElementById("rideModalShareBtn").addEventListener("click", () => {
+  rideModalMenu.classList.remove("open");
   rideModalShare.hidden = !rideModalShare.hidden;
   if (!rideModalShare.hidden) renderRideModalShare();
 });
@@ -1272,43 +1285,6 @@ function fillDayGaps(days) {
 const KM_CHART_HEIGHT = 34;
 const KM_BAR_MIN_PX = 8;
 
-// Wires the shared hover tooltip for a mini-chart (km/day, pause fatigue).
-// Bars carry their tooltip text in data-tooltip; this just positions the
-// shared floating label above whichever bar is hovered.
-function attachMiniChartTooltip(container, selector = ".mini-bar") {
-  const tooltip = container.querySelector(".mini-chart-tooltip");
-  container.querySelectorAll(selector).forEach((bar) => {
-    bar.addEventListener("mouseenter", () => {
-      const barRect = bar.getBoundingClientRect();
-      const containerRect = container.getBoundingClientRect();
-      tooltip.textContent = bar.dataset.tooltip;
-      tooltip.style.left = `${barRect.left - containerRect.left + barRect.width / 2}px`;
-      tooltip.style.top = `${barRect.top - containerRect.top}px`;
-      tooltip.classList.add("visible");
-    });
-    bar.addEventListener("mouseleave", () => tooltip.classList.remove("visible"));
-  });
-}
-
-// Shared by pause dots and col markers on the elevation chart: clicking a
-// marker with data-lat/data-lon flies the ride's map to that spot.
-function wireChartMarkerZoom(markers) {
-  markers.forEach((marker) => {
-    marker.addEventListener("click", () => {
-      const map = state.rideModalMap;
-      if (!map || !marker.dataset.lat) return;
-      map.flyTo([Number(marker.dataset.lat), Number(marker.dataset.lon)], 14, { duration: 0.6 });
-    });
-  });
-}
-
-// Single-hue magnitude chart (km/day) — days are a comparison of one
-// measure, not distinct series, so all bars share the accent color; the
-// currently map-focused day (if any) is emphasized, the rest dimmed, same
-// as the day's polyline on the map above. `fillGaps` is true for a roadtrip
-// (a real continuous date span — a rest day should show as an empty slot)
-// and false for a tag (which has no span semantics — filling gaps between
-// e.g. a 2022 and a 2026 ride would mean thousands of meaningless bars).
 function renderKmChart(trip, fillGaps) {
   const el = document.getElementById("kmChart");
   if (!trip.days.length) {
@@ -1350,51 +1326,13 @@ function renderKmChart(trip, fillGaps) {
   attachMiniChartTooltip(el);
 }
 
-// Fatigue proxy: riding vs. paused, alternating, each segment's width
-// proportional to its real duration (not indexed by pause number, so a long
-// pause followed by a short ride leg is directly visible as shapes, not
-// just two adjacent bar heights). Segments are precomputed server-side
-// (see _merged_ride_timeline in app.py) — merged (tracking-split) rides
-// need each member ride's own pause/resume events resolved independently
-// before concatenating, which needs each member's own start/duration that
-// only the backend has; ride.timeline is already the final [{type, start,
-// end}, ...] list, this just renders it.
-function renderRideTimeline(ride) {
-  const el = document.getElementById("rideModalTimeline");
-  const segments = (ride.timeline || []).map((s) => ({ ...s, start: new Date(s.start), end: new Date(s.end) }));
-  if (!segments.length) {
-    el.innerHTML = "";
-    return;
-  }
-  const totalMs = segments.reduce((sum, s) => sum + (s.end - s.start), 0) || 1;
-  const segHtml = segments.map((s) => {
-    const pct = ((s.end - s.start) / totalMs) * 100;
-    const label = s.type === "ride" ? "Trajet" : "Pause";
-    const tooltipText = `${label} — ${fmtTime(s.start)} → ${fmtTime(s.end)} — ${fmtDuration((s.end - s.start) / 1000)}`;
-    return `<div class="ride-timeline-seg ${s.type}" style="flex-basis:${pct}%" data-tooltip="${tooltipText}"></div>`;
-  }).join("");
-  el.innerHTML = `
-    <div class="l">chronologie du trajet</div>
-    <div class="ride-timeline-legend">
-      <span><span class="swatch ride"></span>Trajet</span>
-      <span><span class="swatch pause"></span>Pause</span>
-    </div>
-    <div class="ride-timeline-track">${segHtml}</div>
-    <div class="ride-timeline-labels">
-      <span>${fmtTime(segments[0].start)}</span>
-      <span>${fmtTime(segments[segments.length - 1].end)}</span>
-    </div>
-    <div class="mini-chart-tooltip"></div>
-  `;
-  attachMiniChartTooltip(el, ".ride-timeline-seg");
-}
-
 // Elevation is estimated (see /api/rides/{id}/elevation — Liberty Rider has
 // no per-point altitude data at all), fetched separately from the rest of
 // the modal since open-elevation can be slow on an uncached track — this
 // must never block or break the modal if it's slow or unavailable, it's a
 // fun/optional detail (e.g. spotting a pause taken at the ride's high
-// point, for a photo).
+// point, for a photo). The drawing itself lives in static/shared.js, since
+// the public share page renders the very same chart.
 async function renderElevationChart(rideId) {
   const el = document.getElementById("rideModalElevation");
   el.innerHTML = "";
@@ -1407,78 +1345,32 @@ async function renderElevationChart(rideId) {
     return; // silent — optional feature, never surface an error for it
   }
   if (state.rideModalId !== rideId) return; // modal moved on to another ride meanwhile
+  setElevationGain(elevGainEl, data);
 
-  if (elevGainEl) {
-    elevGainEl.textContent = data.elevation_gain != null
-      ? `+${Math.round(data.elevation_gain)} / -${Math.round(data.elevation_loss)} m`
-      : "–";
-  }
-
-  const profile = (data.profile || []).filter((p) => p.elevation != null);
-  if (profile.length < 2) return;
-  const pauses = (data.pauses || []).filter((p) => p.elevation != null);
-
-  // A square 0-100 viewBox would distort circles into ellipses once
-  // stretched to a wide, short chart — approximate the real rendered box
-  // (matches #rideModal's width minus padding) so pause/hover dots stay
-  // circular instead of measuring the DOM for a "fun" optional feature.
-  const VIEW_W = 684;
-  const VIEW_H = 70;
-  const maxDistance = profile[profile.length - 1].distance_km || 1;
-  const elevations = profile.map((p) => p.elevation);
-  const minElev = Math.min(...elevations);
-  const maxElev = Math.max(...elevations);
-  const elevRange = maxElev - minElev || 1;
-  const x = (km) => (km / maxDistance) * VIEW_W;
-  const y = (elev) => VIEW_H - ((elev - minElev) / elevRange) * VIEW_H;
-
-  const linePoints = profile.map((p) => `${x(p.distance_km)},${y(p.elevation)}`);
-  const fillPoints = [`${x(profile[0].distance_km)},${VIEW_H}`, ...linePoints, `${x(profile[profile.length - 1].distance_km)},${VIEW_H}`];
-  const hitCircles = profile.map((p) =>
-    `<circle class="elevation-hit" cx="${x(p.distance_km)}" cy="${y(p.elevation)}" r="3"
-       data-tooltip="${p.distance_km.toFixed(1)} km — ${Math.round(p.elevation)} m"></circle>`
-  ).join("");
-  const pauseDots = pauses.map((p) =>
-    `<circle class="elevation-pause-dot" cx="${x(p.distance_km)}" cy="${y(p.elevation)}" r="2.5"
-       data-tooltip="Pause — ${p.distance_km.toFixed(1)} km — ${Math.round(p.elevation)} m"
-       data-lat="${p.lat}" data-lon="${p.lon}"></circle>`
-  ).join("");
-
-  el.innerHTML = `
-    <div class="l">altitude (estimée) <span id="colsLoading" class="cols-loading" title="Recherche des cols…">⋯</span></div>
-    <svg class="elevation-chart" viewBox="0 0 ${VIEW_W} ${VIEW_H}" preserveAspectRatio="none" overflow="visible">
-      <polygon class="elevation-fill" points="${fillPoints.join(" ")}"></polygon>
-      <polyline class="elevation-line" points="${linePoints.join(" ")}"></polyline>
-      ${hitCircles}
-      ${pauseDots}
-    </svg>
-    <div class="elevation-labels">
-      <span>0 km</span>
-      <span>${maxDistance.toFixed(1)} km</span>
-    </div>
-    <div class="mini-chart-tooltip"></div>
-  `;
-  attachMiniChartTooltip(el, ".elevation-hit, .elevation-pause-dot");
-  wireChartMarkerZoom(el.querySelectorAll(".elevation-pause-dot"));
+  const chart = renderElevationProfile(el, data, {
+    getMap: () => state.rideModalMap,
+    label: 'altitude (estimée) <span id="colsLoading" class="cols-loading" title="Recherche des cols…">⋯</span>',
+  });
+  if (!chart) return;
 
   // Cols are fetched separately (see /api/rides/{id}/cols): a network call
   // per candidate peak against OpenStreetMap's Overpass, which can be slow
   // — the chart above must never wait on this, so it's appended once (if)
   // this resolves, after the chart is already visible. #colsLoading gives
-  // a small visual cue that this lookup is still in flight.
+  // a small visual cue that this lookup is still in flight. The public
+  // share page deliberately has no equivalent: an unauthenticated URL has
+  // no business setting off Overpass lookups, or the db write behind them.
   try {
     const colsData = await api(`/api/rides/${rideId}/cols`);
     if (state.rideModalId !== rideId) return;
     const cols = (colsData.cols || []).filter((c) => c.elevation != null);
     if (!cols.length) return;
-    const svg = el.querySelector(".elevation-chart");
-    if (!svg) return;
     // A col is identified by shape (climbs then descends), not altitude —
     // see _detect_peaks in app.py — and named via OpenStreetMap; only
     // named ones are marked here, an unnamed peak would just be noise.
     const colMarkers = cols.map((c) => {
-      const cx = x(c.distance_km);
-      const cy = y(c.elevation);
+      const cx = chart.x(c.distance_km);
+      const cy = chart.y(c.elevation);
       // c.name is an OpenStreetMap `name` tag — anyone can edit it, and it
       // is persisted in ride_cols and replayed on every open, so it is
       // hostile data going into an HTML attribute.
@@ -1486,9 +1378,9 @@ async function renderElevationChart(rideId) {
          data-tooltip="${escapeHtml(c.name)} — ${Math.round(c.elevation)} m — ${c.distance_km.toFixed(1)} km"
          data-lat="${c.lat}" data-lon="${c.lon}"></polygon>`;
     }).join("");
-    svg.insertAdjacentHTML("beforeend", colMarkers);
+    chart.svg.insertAdjacentHTML("beforeend", colMarkers);
     attachMiniChartTooltip(el, ".elevation-col-marker");
-    wireChartMarkerZoom(el.querySelectorAll(".elevation-col-marker"));
+    wireChartMarkerZoom(el.querySelectorAll(".elevation-col-marker"), () => state.rideModalMap);
   } catch (e) {
     // silent — fun/optional detail
   } finally {

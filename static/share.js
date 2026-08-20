@@ -31,22 +31,56 @@ function renderStats(ride) {
   document.getElementById("rideSubtitle").textContent =
     `${fmtDay(ride.start_time)} · ${fmtTime(ride.start_time)} → ${fmtTime(endTime)}`;
 
-  const stats = [
-    [fmtKm(ride.distance), "Distance"],
+  // The same two groups, in the same order, as the ride modal: time
+  // breakdown under the chronology, distance and altitude under the
+  // profile. `elevGain` is filled in later, if and when the elevation
+  // request comes back.
+  fillStats("statsTime", [
     [fmtDuration(ride.duration), "Durée totale"],
     [fmtDuration(ride.duration_without_pauses), "À moto"],
-    [fmtAvgSpeed(ride.distance, ride.duration_without_pauses), "Vitesse moy."],
+    [fmtDuration(ride.total_pauses_duration), "En pause"],
+    [String(ride.pause_count ?? 0), "Pauses"],
+  ]);
+  fillStats("statsTrack", [
+    [fmtKm(ride.distance), "Distance"],
+    [fmtAvgSpeed(ride.distance, ride.duration_without_pauses), "Vitesse moy. (roulant)"],
     [fmtAlt(ride.maximum_altitude), "Altitude max."],
-  ];
-  document.getElementById("stats").innerHTML = stats
-    .map(([v, l]) => `<div class="stat"><div class="v">${escapeHtml(v)}</div><div class="l">${escapeHtml(l)}</div></div>`)
-    .join("");
+    ["…", "Dénivelé (D+ / D-)", "elevGain"],
+  ]);
+
+  renderRideTimeline(ride, document.getElementById("timeline"));
 
   // Said plainly rather than hidden: the trace really does start and end a
   // couple of hundred metres from where the ride did.
   document.getElementById("notice").textContent = ride.track_truncated
     ? "Départ et arrivée approximatifs — les premiers et derniers mètres de la trace ne sont pas partagés."
     : "";
+}
+
+function fillStats(id, stats) {
+  document.getElementById(id).innerHTML = stats
+    .map(([v, l, valueId]) =>
+      `<div class="stat"><div class="v"${valueId ? ` id="${valueId}"` : ""}>${escapeHtml(v)}</div><div class="l">${escapeHtml(l)}</div></div>`)
+    .join("");
+}
+
+// Fetched after the page has already drawn, exactly like the modal does it:
+// open-elevation can be slow on a track nobody has looked at yet, and the
+// map must never wait on it. Unlike the modal, there are no cols — that
+// lookup hits Overpass and writes to the database, which no unauthenticated
+// URL should be able to set off.
+async function loadElevation(map) {
+  let data;
+  try {
+    const resp = await fetch(`/api/public/rides/${encodeURIComponent(token)}/elevation`);
+    if (!resp.ok) throw new Error(String(resp.status));
+    data = await resp.json();
+  } catch (e) {
+    setElevationGain(document.getElementById("elevGain"), {});
+    return; // silent — optional detail, never break the page over it
+  }
+  setElevationGain(document.getElementById("elevGain"), data);
+  renderElevationProfile(document.getElementById("elevation"), data, { getMap: () => map });
 }
 
 function renderMap(ride) {
@@ -73,6 +107,7 @@ function renderMap(ride) {
     if (points.length) map.fitBounds(points, { padding: [24, 24] });
     else map.setView([48.8, 2.3], 8);
   }, 0);
+  return map;
 }
 
 async function load() {
@@ -95,7 +130,7 @@ async function load() {
   document.getElementById("page").hidden = false;
   document.getElementById("footer").hidden = false;
   renderStats(ride);
-  renderMap(ride);
+  loadElevation(renderMap(ride));
 }
 
 load();
