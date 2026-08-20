@@ -4,10 +4,10 @@ Regression cover for the bug where the userbar claimed "à jour" from local
 state alone (a `manualRideCount` vs local-count diff) and so never noticed
 rides waiting on Liberty Rider.
 """
+from conftest import FakeLRClient, make_ride
+
 import db as db_module
 import sync as sync_module
-
-from conftest import FakeLRClient, make_ride
 
 
 def _sync_rides(client, rides):
