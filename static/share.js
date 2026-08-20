@@ -19,7 +19,9 @@ function showStatus(title, text) {
   document.getElementById("status").hidden = false;
   document.getElementById("page").hidden = true;
   // Shown even on a dead link: whoever followed it should still have a way
-  // to find out what this thing is.
+  // to find out what this thing is — minus the "trace partagée depuis",
+  // since on this state there is no trace.
+  document.getElementById("footerLead").textContent = "";
   document.getElementById("footer").hidden = false;
 }
 
