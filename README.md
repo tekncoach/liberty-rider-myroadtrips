@@ -1,13 +1,26 @@
-# Carnet de Route
+﻿# Carnet de Route
+
+**Your Liberty Rider ride history, finally visible** — every ride you ever
+started and stopped, grouped into roadtrips, tagged by place, and put on a
+map.
+
+[![CI](https://github.com/tekncoach/liberty-rider-myroadtrips/actions/workflows/ci.yml/badge.svg)](https://github.com/tekncoach/liberty-rider-myroadtrips/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/tekncoach/liberty-rider-myroadtrips/actions/workflows/codeql.yml/badge.svg)](https://github.com/tekncoach/liberty-rider-myroadtrips/actions/workflows/codeql.yml)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+[**Live demo**](https://liberty-rider-myroadtrips.exe.xyz) (log in with your
+own Liberty Rider account) · [Screenshots](#screenshots) ·
+[Architecture](docs/ARCHITECTURE.md) · [Security policy](SECURITY.md)
 
 A self-hosted, multi-user tool for organizing your personal ride history
-from the [Liberty Rider](https://liberty-rider.com/) motorcycle app. Liberty
-Rider's own web app only shows "roadbooks" you've explicitly published — it
-has no view of your raw ride history — the "Trajets" tab in the mobile
-app, your own stopped rides. This
-tool syncs that history into a database and gives you a map-based UI to
-group rides into multi-day roadtrips, tag them by geographic zone, and
-clean up tracking artifacts like a single ride getting split in two.
+from the [Liberty Rider](https://liberty-rider.com/) motorcycle app.
+Liberty Rider's own web app only shows the "roadbooks" you explicitly
+published; the raw history — the "Trajets" tab of the mobile app, every
+ride you started and stopped — has no web view at all. This tool syncs
+that history into a database and gives you a map-based UI to group rides
+into multi-day roadtrips, tag them by geographic zone, and clean up
+tracking artifacts like a single ride getting split in two.
 
 Independent, unofficial project — not affiliated with, endorsed by, or
 sponsored by Liberty Rider. "Liberty Rider" is a trademark of its own
@@ -72,6 +85,32 @@ col names to sometimes take a moment on a ride you haven't opened before,
 especially over a long or previously-unseen track. Neither is required for
 the app to work; both fail silently if unavailable.
 
+## Security & your data
+
+This app holds credentials to a third-party account and a year's worth of
+where you have been, so it is worth being explicit about what it keeps.
+
+- **Your password is never stored.** It is sent once to Firebase — the
+  identity provider Liberty Rider's own web app uses — and exchanged for
+  tokens.
+- **Those tokens are stored**, in the same database as your rides (the
+  SQLite file or Postgres), so syncing doesn't ask for your password
+  again. They are *not* encrypted at the field level: the app relies on
+  the host's own storage and access controls. Worth weighing before you
+  host this for other people. Logging out deletes them.
+- **Sessions expire** server-side and are purged; every ride, roadtrip and
+  tag row is scoped to your Liberty Rider user id, and every API request
+  is checked against it.
+- **Your rides don't leave the host**, other than as bare GPS coordinates
+  sent to the two public services described above — never with an account,
+  an email or a ride id attached.
+- **Deleting everything**: on a deployment you don't run yourself, ask the
+  operator (the purge endpoint is maintainer-only by design). On your own
+  instance, the whole dataset is one SQLite file or one Postgres database
+  — drop it.
+- **Found a vulnerability?** See [SECURITY.md](SECURITY.md). Please don't
+  open a public issue for it.
+
 ## Screenshots
 
 Ride detail — trajet/pause timeline, estimated elevation profile with named
@@ -90,8 +129,9 @@ A tag — rides collected by place or theme, independent of any date range:
 
 ## Requirements
 
-- Python 3.10+ (the codebase uses `X | Y` union types at runtime, not just
-  in annotations)
+- Python 3.11+ — what CI actually runs the suite against (3.11, 3.12 and
+  3.13). The only hard floor in the code itself is 3.10 (`X | Y` union
+  types at runtime, not just in annotations), but nothing verifies that.
 - A Liberty Rider account with some ride history
 - Postgres, only if deploying for more than yourself (see below) — plain
   SQLite is used automatically otherwise, no setup needed
@@ -108,9 +148,8 @@ email and password — that's it. There's no separate token to fetch or paste;
 the app exchanges your credentials directly with Firebase (the same
 identity provider Liberty Rider's own web app uses) and keeps a session for
 you from then on. Your password is never stored — only the resulting
-session tokens are, in the same database as your rides (SQLite file or
-Postgres — see below), relying on the host's own storage/access security
-rather than any additional field-level encryption in the app itself.
+tokens are; see [Security & your data](#security--your-data) for what that
+means exactly.
 
 Once logged in, click **Synchroniser** to pull your ride history in, then
 **Full sync** any time you want to re-walk the entire history instead of

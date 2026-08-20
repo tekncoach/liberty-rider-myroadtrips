@@ -1,4 +1,4 @@
-# Contributing
+﻿# Contributing
 
 This is a small, single-maintainer personal project — contributions are
 welcome, but keep things simple and in proportion to the codebase.
@@ -62,6 +62,23 @@ Copy `.env.example` to `.env` if you need to override `COOKIE_SECURE` or
   introduce a build step or a frontend framework for a small feature.
 - Favor small, focused modules over adding more responsibilities to
   `app.py`.
+
+## Cutting a release
+
+Releases are cheap here and exist so a bug report can say *which* version
+it is about.
+
+1. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new
+   `## [X.Y.Z] — YYYY-MM-DD` heading, and open a fresh empty
+   `[Unreleased]` above it.
+2. Tag the commit: `git tag -a vX.Y.Z -m "…"` and push the tag.
+3. Create the GitHub release from that tag, pasting the changelog section
+   as its notes.
+
+Version numbers follow semver, read for an app rather than a library: the
+major/minor/patch decision hangs on whether an operator has something to
+do before deploying (a migration to run, an environment variable to set),
+not on a function signature.
 
 ## Submitting a change
 

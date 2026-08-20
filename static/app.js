@@ -131,6 +131,75 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   }
 });
 
+// --- dialog accessibility ---
+// The three overlays (ride detail, admin, guided tour) cover the whole
+// viewport but are plain <div>s, so the browser gives them none of a real
+// dialog's behaviour: Tab walks straight out of them into the list behind,
+// Escape does nothing, and closing one drops focus on <body> instead of
+// the control that opened it. Each overlay registers here when it opens.
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[contenteditable="true"]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
+
+let activeDialog = null;
+
+// getClientRects() rather than offsetParent: the tour tooltip is
+// position:fixed, for which offsetParent is null even when it is on screen.
+function focusableIn(el) {
+  return [...el.querySelectorAll(FOCUSABLE_SELECTOR)].filter((n) => n.getClientRects().length > 0);
+}
+
+// `close` is the overlay's own close function, so Escape runs exactly the
+// same teardown as clicking "Fermer" — including releaseDialog().
+function openDialog(el, close) {
+  activeDialog = { el, close, restoreTo: document.activeElement };
+  // Focus the dialog container (tabindex="-1") rather than its first
+  // control: a screen reader then announces the dialog's own label, and
+  // Enter doesn't fire whatever happened to come first in the markup —
+  // which, in the ride modal, is the GPX download link.
+  el.focus();
+}
+
+function releaseDialog(el) {
+  if (!activeDialog || activeDialog.el !== el) return;
+  const { restoreTo } = activeDialog;
+  activeDialog = null;
+  // The opener can be gone by now (a ride row re-rendered under the modal).
+  if (restoreTo && restoreTo.isConnected) restoreTo.focus();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!activeDialog) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    activeDialog.close();
+    return;
+  }
+  if (e.key !== "Tab") return;
+  const items = focusableIn(activeDialog.el);
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  // Clicking the backdrop leaves focus on <body>; pull it back in rather
+  // than letting the next Tab land behind the dialog.
+  if (!activeDialog.el.contains(document.activeElement)) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+  } else if (e.shiftKey && (document.activeElement === first || document.activeElement === activeDialog.el)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+});
+
 document.getElementById("logoutBtn").addEventListener("click", async () => {
   document.getElementById("userMenu").classList.remove("open");
   await api("/api/auth/logout", { method: "POST" });
@@ -140,11 +209,15 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
 
 document.getElementById("userMenuBtn").addEventListener("click", (e) => {
   e.stopPropagation();
-  document.getElementById("userMenu").classList.toggle("open");
+  const open = document.getElementById("userMenu").classList.toggle("open");
+  e.currentTarget.setAttribute("aria-expanded", String(open));
 });
 document.addEventListener("click", (e) => {
   const menu = document.getElementById("userMenu");
-  if (!menu.contains(e.target) && e.target.id !== "userMenuBtn") menu.classList.remove("open");
+  if (!menu.contains(e.target) && e.target.id !== "userMenuBtn") {
+    menu.classList.remove("open");
+    document.getElementById("userMenuBtn").setAttribute("aria-expanded", "false");
+  }
 });
 
 async function enterApp(firstName, isAdmin) {
@@ -247,6 +320,7 @@ document.getElementById("adminModalBackdrop").addEventListener("click", (e) => {
 
 function closeAdminModal() {
   document.getElementById("adminModalBackdrop").classList.remove("visible");
+  releaseDialog(document.getElementById("adminModal"));
 }
 
 // Short absolute date; "—" when the value is missing (e.g. a user who never
@@ -261,6 +335,7 @@ async function openAdminModal() {
   const summary = document.getElementById("adminSummary");
   const tableWrap = document.getElementById("adminTableWrap");
   backdrop.classList.add("visible");
+  openDialog(document.getElementById("adminModal"), closeAdminModal);
   summary.innerHTML = "";
   tableWrap.innerHTML = '<div class="section loading-section">Chargement…</div>';
 
@@ -650,6 +725,7 @@ rideModalBackdrop.addEventListener("click", (e) => {
 
 function closeRideModal() {
   rideModalBackdrop.classList.remove("visible");
+  releaseDialog(document.getElementById("rideModal"));
   if (state.rideModalMap) {
     state.rideModalMap.remove();
     state.rideModalMap = null;
@@ -687,6 +763,7 @@ async function openRideModal(id) {
   const notesEl = document.getElementById("rideModalNotesText");
   notesEl.textContent = ride.notes || "";
   rideModalBackdrop.classList.add("visible");
+  openDialog(document.getElementById("rideModal"), closeRideModal);
 
   if (state.rideModalMap) {
     state.rideModalMap.remove();
@@ -722,6 +799,7 @@ async function openRideModal(id) {
       btn.type = "button";
       btn.innerHTML = "⤢";
       btn.title = "Recentrer sur toute la trace";
+      btn.setAttribute("aria-label", "Recentrer la carte sur toute la trace");
       L.DomEvent.on(btn, "click", (e) => {
         L.DomEvent.stopPropagation(e);
         if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
@@ -741,7 +819,7 @@ async function openRideModal(id) {
 function renderRideModalTags(tags) {
   const chips = document.getElementById("rideModalTagChips");
   chips.innerHTML = tags.map((t) => `
-    <span class="tag-chip" data-tag-id="${t.id}">${escapeHtml(t.name)}<button title="Retirer">×</button></span>
+    <span class="tag-chip" data-tag-id="${t.id}">${escapeHtml(t.name)}<button title="Retirer" aria-label="Retirer le tag ${escapeHtml(t.name)}">×</button></span>
   `).join("");
   chips.querySelectorAll(".tag-chip button").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
@@ -960,6 +1038,7 @@ function setupRideModalDetailsToggle() {
   header.onclick = () => {
     const collapsed = body.classList.toggle("collapsed");
     btn.textContent = collapsed ? "▸" : "▾";
+    btn.setAttribute("aria-expanded", String(!collapsed));
     header.title = collapsed ? "Agrandir" : "Réduire";
     setTimeout(() => state.rideModalMap && state.rideModalMap.invalidateSize(), 0);
   };
@@ -984,7 +1063,7 @@ function renderDayList(trip) {
         <div class="m">${fmtDuration(d.total_duration)} (dont ${fmtDuration(d.total_duration_without_pauses)} à moto)</div>
         <div class="m">${d.total_pause_count} pause(s)</div>
         <div class="m">${d.ride_ids.length} étape(s)</div>
-        ${single ? `<button class="detail-btn" data-ride="${d.ride_ids[0]}" title="Voir le détail du trajet (chronologie, altitude, carte)">🔍</button>` : ""}
+        ${single ? `<button class="detail-btn" data-ride="${d.ride_ids[0]}" title="Voir le détail du trajet (chronologie, altitude, carte)" aria-label="Voir le détail du trajet du ${escapeHtml(d.date)}">🔍</button>` : ""}
       </div>
       <div class="day-rides">
         ${d.ride_ids.map((rideId) => {
@@ -999,9 +1078,9 @@ function renderDayList(trip) {
                 <span class="meta-item"><span class="icon">📏</span>${fmtKm(r.distance)}</span>
                 <span class="meta-item"><span class="icon">⏱</span>${fmtDuration(r.duration)}</span>
               </span>
-              <div class="day-ride-note" contenteditable="true" data-ride="${rideId}" data-placeholder="+ note…" title="${escapeHtml(r.notes || "")}">${escapeHtml(r.notes || "")}</div>
-              ${single ? "" : `<button class="detail-btn" data-ride="${rideId}" title="Voir le détail du trajet (chronologie, altitude, carte)">🔍</button>`}
-              <button class="trash-btn" data-ride="${rideId}" title="Retirer du roadtrip">🗑</button>
+              <div class="day-ride-note" contenteditable="true" role="textbox" aria-label="Note du trajet" data-ride="${rideId}" data-placeholder="+ note…" title="${escapeHtml(r.notes || "")}">${escapeHtml(r.notes || "")}</div>
+              ${single ? "" : `<button class="detail-btn" data-ride="${rideId}" title="Voir le détail du trajet (chronologie, altitude, carte)" aria-label="Voir le détail de « ${escapeHtml(r.name || fmtDate(r.start_time))} »">🔍</button>`}
+              <button class="trash-btn" data-ride="${rideId}" title="Retirer du roadtrip" aria-label="Retirer « ${escapeHtml(r.name || fmtDate(r.start_time))} » du roadtrip">🗑</button>
             </div>
           `;
         }).join("")}
@@ -1440,9 +1519,12 @@ function startOnboardingTour() {
   tourStepIndex = 0;
   document.getElementById("tourOverlay").style.display = "block";
   showTourStep();
+  // Escape leaves the tour, same as the "Passer" button.
+  openDialog(document.getElementById("tourTooltip"), endOnboardingTour);
 }
 
 function endOnboardingTour() {
+  releaseDialog(document.getElementById("tourTooltip"));
   document.getElementById("tourOverlay").style.display = "none";
   localStorage.setItem("onboardingTourDone", "1");
 }

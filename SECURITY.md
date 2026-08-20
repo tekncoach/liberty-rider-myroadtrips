@@ -18,6 +18,15 @@ premier diagnostic sous 30 jours. Les vulnérabilités confirmées sont
 corrigées sur `main` puis déployées ; vous serez crédité·e si vous le
 souhaitez.
 
+## Versions concernées
+
+Le projet est distribué sans branche de maintenance : seule la dernière
+version de `main` est suivie, et c'est aussi ce qui tourne sur le
+déploiement de démonstration. Un correctif de sécurité part sur `main`,
+puis dans la prochaine version publiée (voir `CHANGELOG.md`) — il n'y a
+pas de rétroportage vers une version antérieure. Si vous auto-hébergez
+une version plus ancienne, la mise à jour est le correctif.
+
 ## Périmètre
 
 **Dans le périmètre** — le code de ce dépôt et le déploiement de démonstration :

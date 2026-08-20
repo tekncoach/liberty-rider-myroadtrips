@@ -1,0 +1,7 @@
+# The landing page at / is the only public content. /app is a login screen
+# in front of per-account ride data and /api is that data itself — neither
+# belongs in an index (index.html carries a matching `noindex` for crawlers
+# that reach it through a link rather than through this file).
+User-agent: *
+Disallow: /app
+Disallow: /api/

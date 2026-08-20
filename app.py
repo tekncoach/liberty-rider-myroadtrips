@@ -1667,4 +1667,17 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
+# Crawlers only ever look for these two at the root, never under /static.
+@app.get("/robots.txt", include_in_schema=False)
+def robots():
+    return FileResponse(STATIC / "robots.txt", media_type="text/plain")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    # Not an .ico: both pages link the SVG explicitly, and this route only
+    # exists for the clients that ask for /favicon.ico regardless.
+    return FileResponse(STATIC / "img" / "favicon.svg", media_type="image/svg+xml")
+
+
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
