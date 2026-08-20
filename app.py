@@ -9,8 +9,10 @@ firebase_refresh.py. There is no other login path.
 """
 from __future__ import annotations
 
+import logging
 import os
 import pathlib
+import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
 
@@ -18,7 +20,7 @@ import gpxpy
 import gpxpy.gpx
 import polyline as polyline_lib
 import requests
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.responses import Response as RawResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +33,8 @@ import sync as sync_module
 from firebase_refresh import refresh_id_token, sign_in_with_password
 from liberty_client import LibertyRiderClient
 from utils import day_key, haversine_km, parse_iso
+
+logger = logging.getLogger("carnet")
 
 ROOT = pathlib.Path(__file__).parent
 STATIC = ROOT / "static"
@@ -729,23 +733,67 @@ class MergeRidesRequest(BaseModel):
 
 # --- auth ---------------------------------------------------------------
 
+# Failed-login throttling (finding APP-02). Deliberately in-process: the
+# service runs a single uvicorn worker, and a dict is honest about that —
+# a database counter would only look distributed while sharing the same
+# single process. Revisit if the deployment ever grows workers.
+LOGIN_MAX_FAILURES = 5
+LOGIN_WINDOW_S = 15 * 60
+_login_failures: dict[str, list[float]] = {}
+
+
+def _recent_failures(key: str, now: float) -> list[float]:
+    fails = [t for t in _login_failures.get(key, []) if now - t < LOGIN_WINDOW_S]
+    if fails:
+        _login_failures[key] = fails
+    else:
+        _login_failures.pop(key, None)
+    return fails
+
+
+def _login_throttle_keys(req_email: str, request) -> list[str]:
+    """Throttled per email *and* per client IP: per-email alone lets one
+    host spray many accounts, per-IP alone lets a botnet grind one account."""
+    client_ip = request.client.host if request.client else "unknown"
+    return [f"email:{req_email.strip().lower()}", f"ip:{client_ip}"]
+
+
+def _check_login_throttle(keys: list[str]) -> None:
+    now = time.monotonic()
+    for key in keys:
+        if len(_recent_failures(key, now)) >= LOGIN_MAX_FAILURES:
+            raise HTTPException(
+                status_code=429,
+                detail="Trop de tentatives de connexion. Réessaie dans quelques minutes.",
+            )
+
+
+def _record_login_failure(keys: list[str]) -> None:
+    now = time.monotonic()
+    for key in keys:
+        _login_failures.setdefault(key, []).append(now)
+
+
 @app.post("/api/auth/login")
-def api_login(req: LoginRequest, response: Response):
+def api_login(req: LoginRequest, response: Response, request: Request):
     if not FIREBASE_API_KEY:
         raise HTTPException(
             status_code=500,
             detail="Server misconfigured: LIBERTY_RIDER_FIREBASE_API_KEY isn't set.",
         )
+    throttle_keys = _login_throttle_keys(req.email, request)
+    # Checked before the outbound call, so a flood costs us nothing and
+    # doesn't hammer Firebase from this server's IP either.
+    _check_login_throttle(throttle_keys)
     try:
         tokens = sign_in_with_password(req.email, req.password, FIREBASE_API_KEY)
     except requests.HTTPError as e:
-        message = "Login failed"
-        if e.response is not None:
-            try:
-                message = e.response.json().get("error", {}).get("message", message)
-            except ValueError:
-                pass
-        raise HTTPException(status_code=401, detail=message)
+        _record_login_failure(throttle_keys)
+        logger.warning("login failed for %s", req.email)
+        # Firebase's own message distinguishes EMAIL_NOT_FOUND from
+        # INVALID_PASSWORD; relaying it turned this endpoint into an account
+        # enumeration oracle for Liberty Rider accounts. One generic answer.
+        raise HTTPException(status_code=401, detail="Identifiants invalides") from e
 
     client = LibertyRiderClient(tokens["id_token"])
     try:
@@ -774,7 +822,14 @@ def api_logout(response: Response, session_id: str | None = Cookie(default=None,
     if session_id:
         conn = db.connect()
         try:
+            user = db.get_session_user(conn, session_id)
             db.delete_session(conn, session_id)
+            # The Firebase refresh token never expires on its own and can
+            # mint Liberty Rider tokens indefinitely — keeping it for an
+            # account that just logged out is pure liability (APP-01).
+            if user:
+                db.clear_refresh_token(conn, user["id"])
+                logger.info("logout for user %s", user["id"])
         finally:
             conn.close()
     response.delete_cookie(SESSION_COOKIE)
