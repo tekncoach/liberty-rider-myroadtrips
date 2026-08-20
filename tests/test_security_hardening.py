@@ -330,3 +330,25 @@ def test_log_values_cannot_forge_journal_entries(app_module):
     assert "\n" not in safe
     assert "sudo" in safe.replace("_", " "), "the text is neutralised, not dropped"
     assert len(app_module._log_safe("x" * 500)) <= 120
+
+
+def test_costly_endpoints_are_rate_limited(client, login_as, app_module):
+    """APP-05 — /sync walks pages of ride history against a third-party API;
+    an account must not be able to run it in a loop."""
+    login_as(client, "user-1")
+    limit, _ = app_module.COSTLY_LIMITS["sync"]
+    for _ in range(limit):
+        client.post("/api/sync", json={"full": False})
+    assert client.post("/api/sync", json={"full": False}).status_code == 429
+
+
+def test_rate_limit_is_per_account(make_client, login_as, app_module):
+    """One account burning its allowance must not lock out another."""
+    alice, bob = make_client(), make_client()
+    login_as(alice, "user-1")
+    login_as(bob, "user-2")
+    limit, _ = app_module.COSTLY_LIMITS["sync"]
+    for _ in range(limit + 1):
+        alice.post("/api/sync", json={"full": False})
+    assert alice.post("/api/sync", json={"full": False}).status_code == 429
+    assert bob.post("/api/sync", json={"full": False}).status_code == 200

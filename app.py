@@ -836,6 +836,51 @@ _login_failures: dict[str, list[float]] = {}
 _last_sweep = 0.0
 
 
+# Endpoints that reach outside: Overpass and open-elevation lookups, and
+# the Liberty Rider API. One worker, a pool of 5 connections, and free
+# third-party APIs that will happily throttle this server's IP — so an
+# authenticated account can't be allowed to hammer them either. Generous
+# enough that normal browsing never notices: opening ride details, syncing,
+# checking freshness.
+COSTLY_LIMITS = {
+    "cols": (30, 300),        # 30 per 5 min — one Overpass call per peak
+    "elevation": (60, 300),   # 60 per 5 min — cached by coordinate after the first
+    "sync": (10, 300),        # 10 per 5 min — walks pages of ride history
+    "sync_status": (60, 300),
+    "public_elevation": (30, 300),  # per visitor IP, the one unauthenticated path
+}
+_costly_calls: dict[str, list[float]] = {}
+_last_costly_sweep = 0.0
+
+
+def _rate_limit(bucket: str, who: str) -> None:
+    """Raise 429 when `who` has used up `bucket`'s allowance.
+
+    Same in-process design as the login throttle, and the same caveat: it is
+    honest about a single-worker deployment and would need moving to the
+    database the day this runs more than one.
+    """
+    global _last_costly_sweep
+    max_calls, window = COSTLY_LIMITS[bucket]
+    now = time.monotonic()
+    if now - _last_costly_sweep > window:
+        _last_costly_sweep = now
+        for k in list(_costly_calls):
+            if all(now - t >= window for t in _costly_calls[k]):
+                del _costly_calls[k]
+    key = f"{bucket}:{who}"
+    recent = [t for t in _costly_calls.get(key, []) if now - t < window]
+    if len(recent) >= max_calls:
+        _costly_calls[key] = recent
+        raise HTTPException(status_code=429, detail="Trop de requêtes — réessaie dans un instant.")
+    recent.append(now)
+    _costly_calls[key] = recent
+
+
+def _client_ip(request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
 def _sweep_login_failures(now: float) -> None:
     """Drop every key whose failures have all aged out. Without this, only
     the key being looked at was ever pruned — so spraying N distinct emails
@@ -1048,6 +1093,7 @@ def api_admin_stats(user=Depends(get_session_user)):
 
 @app.post("/api/sync")
 def api_sync(req: SyncRequest, user=Depends(get_session_user)):
+    _rate_limit("sync", user["id"])
     conn = db.connect()
     try:
         client = _live_client_for(conn, user)
@@ -1074,6 +1120,7 @@ def api_sync_status(user=Depends(get_session_user)):
     only ever tell that nothing changed since the last sync *we* ran, which
     is exactly what made the UI claim "à jour" while new rides were waiting.
     """
+    _rate_limit("sync_status", user["id"])
     conn = db.connect()
     try:
         client = _live_client_for(conn, user)
@@ -1176,6 +1223,7 @@ def _ride_track_samples(conn, row, truncate: bool = False):
 
 @app.get("/api/rides/{ride_id}/elevation")
 def api_ride_elevation(ride_id: str, user=Depends(get_session_user)):
+    _rate_limit("elevation", user["id"])
     """Elevation profile along the track, resampled to ~60 points by
     distance, plus each pause projected onto its nearest track point (fun
     detail: spot a pause taken at the highest point of the ride, e.g. for a
@@ -1237,6 +1285,7 @@ def _elevation_payload(conn, row, truncate: bool = False) -> dict:
 
 @app.get("/api/rides/{ride_id}/cols")
 def api_ride_cols(ride_id: str, user=Depends(get_session_user)):
+    _rate_limit("cols", user["id"])
     """Named mountain passes along the track (see mountain_pass.py and
     _detect_peaks) — kept separate from /elevation precisely because this
     is the slow part (a network round-trip per candidate peak); the
@@ -1951,7 +2000,7 @@ def _render_share_page(title: str, description: str, url: str) -> str:
 
 
 @app.get("/api/public/rides/{token}/elevation")
-def api_public_ride_elevation(token: str, response: Response):
+def api_public_ride_elevation(token: str, request: Request, response: Response):
     """The shared ride's elevation profile — the same chart the owner sees
     in the modal, computed from the TRUNCATED track (see
     `_ride_track_samples`) so it can't give back the endpoint metres the
@@ -1967,6 +2016,9 @@ def api_public_ride_elevation(token: str, response: Response):
     Cols are deliberately NOT offered publicly: that endpoint is one
     Overpass call per candidate peak and writes to the database, which is
     not something an unauthenticated URL should be able to set off."""
+    # The one unauthenticated path that can reach open-elevation: limited
+    # per visitor IP rather than per account, since there is no account.
+    _rate_limit("public_elevation", _client_ip(request))
     response.headers["X-Robots-Tag"] = "noindex, nofollow"
     conn = db.connect()
     try:
