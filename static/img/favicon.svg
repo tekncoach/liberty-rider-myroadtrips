@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Carnet de Route</title>
+  <!-- The landing page's own terracotta/cream pair, so the tab icon and the
+       site read as the same thing. A road rather than a motorcycle: a bike
+       silhouette turns to mush at 16px, an S-curve survives it. -->
+  <rect width="64" height="64" rx="14" fill="#c94722"/>
+  <path d="M21 57 C21 41 43 41 43 27 C43 16 35 11 29 8"
+        fill="none" stroke="#f3ede0" stroke-width="10" stroke-linecap="round"/>
+  <path d="M21 57 C21 41 43 41 43 27 C43 16 35 11 29 8"
+        fill="none" stroke="#c94722" stroke-width="2.4" stroke-linecap="round"
+        stroke-dasharray="4 7"/>
+</svg>

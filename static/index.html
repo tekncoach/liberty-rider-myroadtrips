@@ -2,8 +2,14 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8" />
-<title>Carnet de Route</title>
+<title>Carnet de Route — mes trajets</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Everything past the login form is per-account data; the landing page at
+     / is what search engines are meant to index. robots.txt says the same. -->
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#c94722" />
+<link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
       crossorigin="anonymous" referrerpolicy="no-referrer" />
