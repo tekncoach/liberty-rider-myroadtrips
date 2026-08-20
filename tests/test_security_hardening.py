@@ -181,3 +181,142 @@ def test_api_docs_are_not_published_in_production(temp_db, monkeypatch):
     finally:
         monkeypatch.delenv("COOKIE_SECURE", raising=False)
         importlib.reload(app_mod)
+
+
+# --- follow-ups from the adversarial re-review (R-2 … R-7) ---------------
+
+def test_sessions_without_an_expiry_are_backfilled_not_left_immortal(client, login_as, app_module):
+    """R-2 — a NULL expires_at was accepted forever by get_session_user AND
+    skipped by delete_expired_sessions: an unpurgeable, immortal session."""
+    login_as(client, "user-1")
+    conn = db_module.connect()
+    try:
+        conn.execute("UPDATE sessions SET expires_at = NULL")
+        conn.commit()
+    finally:
+        conn.close()
+
+    db_module.init_db()  # what a deploy does
+
+    conn = db_module.connect()
+    try:
+        row = conn.execute("SELECT expires_at FROM sessions").fetchone()
+    finally:
+        conn.close()
+    assert row["expires_at"] is not None
+
+
+def test_login_purges_expired_sessions(client, login_as):
+    """R-3 — nothing called the purge, so the table only ever grew."""
+    login_as(client, "user-1")
+    conn = db_module.connect()
+    try:
+        conn.execute("UPDATE sessions SET expires_at = ?", ("2000-01-01 00:00:00",))
+        conn.commit()
+    finally:
+        conn.close()
+
+    login_as(client, "user-1")  # a second login runs the purge
+
+    conn = db_module.connect()
+    try:
+        rows = conn.execute("SELECT expires_at FROM sessions").fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1  # only the fresh one survived
+
+
+def test_logout_on_one_device_leaves_other_sessions_working(make_client, login_as):
+    """R-5 — clearing the account's tokens on any logout broke every other
+    logged-in device's sync."""
+    phone, laptop = make_client(), make_client()
+    login_as(phone, "user-1")
+    login_as(laptop, "user-1")
+
+    phone.post("/api/auth/logout")
+
+    conn = db_module.connect()
+    try:
+        row = conn.execute("SELECT refresh_token FROM users WHERE id = 'user-1'").fetchone()
+    finally:
+        conn.close()
+    assert row["refresh_token"] is not None, "the laptop still needs it"
+    assert laptop.get("/api/rides").status_code == 200
+
+
+def test_logout_everywhere_drops_all_sessions_and_tokens(make_client, login_as):
+    """R-4 — delete_user_sessions() existed but was wired to nothing."""
+    phone, laptop = make_client(), make_client()
+    login_as(phone, "user-1")
+    login_as(laptop, "user-1")
+
+    assert phone.post("/api/auth/logout-all").status_code == 200
+
+    assert laptop.get("/api/rides").status_code == 401
+    conn = db_module.connect()
+    try:
+        row = conn.execute("SELECT refresh_token FROM users WHERE id = 'user-1'").fetchone()
+        assert conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"] == 0
+    finally:
+        conn.close()
+    assert row["refresh_token"] is None
+
+
+def test_logout_everywhere_requires_a_session(client):
+    assert client.post("/api/auth/logout-all").status_code == 401
+
+
+def test_origin_check_ignores_the_scheme(client, login_as):
+    """R-6 — comparing the full origin made every write depend on the proxy
+    forwarding X-Forwarded-Proto: drop it and the app 403s everything."""
+    login_as(client, "user-1")
+    resp = client.post(
+        "/api/roadtrips",
+        json={"name": "Derrière un proxy TLS"},
+        headers={"origin": "https://testserver"},  # app itself sees http
+    )
+    assert resp.status_code == 200
+
+
+def test_allowed_origin_pins_the_full_origin_when_set(temp_db, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import app as app_mod
+
+    monkeypatch.setenv("ALLOWED_ORIGIN", "https://carnet.example")
+    importlib.reload(app_mod)
+    try:
+        pinned = TestClient(app_mod.app)
+        resp = pinned.post("/api/roadtrips", json={"name": "x"}, headers={"origin": "http://testserver"})
+        assert resp.status_code == 403
+    finally:
+        monkeypatch.delenv("ALLOWED_ORIGIN", raising=False)
+        importlib.reload(app_mod)
+
+
+def test_login_failure_tracking_does_not_grow_without_bound(client, app_module, monkeypatch):
+    """R-7 — only the key being read was pruned, so a spray across many
+    emails left an entry per email behind, forever."""
+    import requests
+
+    class FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {"error": {"message": "INVALID_PASSWORD"}}
+
+    def fake_sign_in(email, password, api_key):
+        err = requests.HTTPError("bad creds")
+        err.response = FakeResponse()
+        raise err
+
+    monkeypatch.setattr(app_module, "sign_in_with_password", fake_sign_in)
+    for i in range(20):
+        client.post("/api/auth/login", json={"email": f"spray{i}@example.com", "password": "x"})
+    assert len(app_module._login_failures) > 1
+
+    # Everything has aged out; the next check sweeps the whole dict, not
+    # just the key it happens to look at.
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: 10_000_000.0)
+    app_module._check_login_throttle(["email:someone@example.com"])
+    assert app_module._login_failures == {}

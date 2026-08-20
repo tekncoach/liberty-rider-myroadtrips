@@ -15,6 +15,7 @@ import pathlib
 import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from urllib.parse import urlparse
 
 import gpxpy
 import gpxpy.gpx
@@ -53,9 +54,26 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"
 # maintainer-only tools (currently: purging one's own synced data to
 # re-test onboarding) — not a feature end users are meant to see or use.
 ADMIN_USER_IDS = {u.strip() for u in os.environ.get("ADMIN_USER_IDS", "").split(",") if u.strip()}
+# Exact origin allowed to send mutating requests, e.g.
+# "https://liberty-rider-myroadtrips.exe.xyz". Unset (the default) falls back
+# to comparing hosts — see _is_cross_site().
+ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "").strip()
+
+def _purge_expired_sessions_at_startup() -> None:
+    """Nothing else removes an expired row on a long-running server between
+    logins, so the table is swept once on boot too."""
+    conn = db.connect()
+    try:
+        purged = db.delete_expired_sessions(conn)
+        if purged:
+            logger.info("purged %s expired session(s) at startup", purged)
+    finally:
+        conn.close()
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    _purge_expired_sessions_at_startup()
     # Not `yield`ed to for TestClient(app) used without a `with` block
     # (every test fixture here) — db.init_db() below still runs eagerly
     # at import time so tests are unaffected; this only handles a clean
@@ -116,12 +134,18 @@ def _is_cross_site(request) -> bool:
     POSTs, but that's a browser default we inherit rather than a decision we
     made — this is the explicit half. Requests with no Origin at all (curl,
     the test client, non-browser callers) are left alone: the header is a
-    browser signal, not an authentication mechanism."""
+    browser signal, not an authentication mechanism.
+
+    Only the host is compared, never the scheme: behind a TLS-terminating
+    proxy the request's own scheme depends on X-Forwarded-Proto, and a proxy
+    that stopped forwarding it would turn every write into a 403. Set
+    ALLOWED_ORIGIN to compare the full origin instead."""
     origin = request.headers.get("origin")
     if not origin:
         return False
-    expected = f"{request.url.scheme}://{request.headers.get('host', '')}"
-    return origin != expected
+    if ALLOWED_ORIGIN:
+        return origin != ALLOWED_ORIGIN
+    return urlparse(origin).netloc != request.headers.get("host", "")
 
 
 @app.middleware("http")
@@ -742,6 +766,21 @@ class MergeRidesRequest(BaseModel):
 LOGIN_MAX_FAILURES = 5
 LOGIN_WINDOW_S = 15 * 60
 _login_failures: dict[str, list[float]] = {}
+_last_sweep = 0.0
+
+
+def _sweep_login_failures(now: float) -> None:
+    """Drop every key whose failures have all aged out. Without this, only
+    the key being looked at was ever pruned — so spraying N distinct emails
+    left N entries behind, i.e. unbounded memory growth in the very thing
+    meant to absorb a flood."""
+    global _last_sweep
+    if now - _last_sweep < LOGIN_WINDOW_S:
+        return
+    _last_sweep = now
+    for key in list(_login_failures):
+        if all(now - t >= LOGIN_WINDOW_S for t in _login_failures[key]):
+            del _login_failures[key]
 
 
 def _recent_failures(key: str, now: float) -> list[float]:
@@ -762,6 +801,7 @@ def _login_throttle_keys(req_email: str, request) -> list[str]:
 
 def _check_login_throttle(keys: list[str]) -> None:
     now = time.monotonic()
+    _sweep_login_failures(now)
     for key in keys:
         if len(_recent_failures(key, now)) >= LOGIN_MAX_FAILURES:
             raise HTTPException(
@@ -809,6 +849,9 @@ def api_login(req: LoginRequest, response: Response, request: Request):
         db.upsert_user(conn, user_id, lr_user.get("firstName"), req.email)
         db.save_user_tokens(conn, user_id, tokens["id_token"], tokens["refresh_token"], FIREBASE_API_KEY)
         db.claim_orphaned_data(conn, user_id)
+        # Cheap, and login is the one moment where one more query is free —
+        # otherwise nothing ever removes an expired row (R-3).
+        db.delete_expired_sessions(conn)
         session_id = db.create_session(conn, user_id)
     finally:
         conn.close()
@@ -827,13 +870,33 @@ def api_logout(response: Response, session_id: str | None = Cookie(default=None,
             user = db.get_session_user(conn, session_id)
             db.delete_session(conn, session_id)
             # The Firebase refresh token never expires on its own and can
-            # mint Liberty Rider tokens indefinitely — keeping it for an
-            # account that just logged out is pure liability (APP-01).
-            if user:
+            # mint Liberty Rider tokens indefinitely, so it shouldn't outlive
+            # the account's last session (APP-01) — but clearing it while
+            # another device is still logged in would break that device's
+            # sync with "No Liberty Rider token on file". Hence: only once
+            # nobody is left.
+            if user and not db.has_active_session(conn, user["id"]):
                 db.clear_refresh_token(conn, user["id"])
+            if user:
                 logger.info("logout for user %s", user["id"])
         finally:
             conn.close()
+    response.delete_cookie(SESSION_COOKIE)
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout-all")
+def api_logout_everywhere(response: Response, user=Depends(get_session_user)):
+    """Drop every session of this account, everywhere, and the stored
+    Liberty Rider tokens with them — the "someone else has my session"
+    button. Plain logout deliberately leaves other devices alone."""
+    conn = db.connect()
+    try:
+        db.delete_user_sessions(conn, user["id"])
+        db.clear_refresh_token(conn, user["id"])
+        logger.info("logout-all for user %s", user["id"])
+    finally:
+        conn.close()
     response.delete_cookie(SESSION_COOKIE)
     return {"ok": True}
 

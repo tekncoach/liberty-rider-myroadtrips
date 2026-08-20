@@ -57,6 +57,11 @@ def _now(offset_days: int = 0) -> str:
     into the future (session deadlines)."""
     return (datetime.now(UTC) + timedelta(days=offset_days)).strftime("%Y-%m-%d %H:%M:%S")
 
+# Sessions used to live forever server-side: the cookie carried a 30-day
+# Max-Age, but that is a browser-side courtesy — a stolen session id stayed
+# valid indefinitely. The server now owns the deadline.
+SESSION_TTL_DAYS = 30
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -313,6 +318,13 @@ def init_db() -> None:
         sessions_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
         if "expires_at" not in sessions_cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
+        # Backfilled from created_at rather than left NULL: a NULL row would
+        # be accepted forever by get_session_user() and skipped by
+        # delete_expired_sessions(), i.e. an immortal session.
+        conn.execute(
+            f"UPDATE sessions SET expires_at = datetime(created_at, '+{SESSION_TTL_DAYS} days') "
+            "WHERE expires_at IS NULL"
+        )
 
         conn.executescript(POST_MIGRATION_INDEXES)
         conn.commit()
@@ -561,12 +573,6 @@ def save_user_tokens(conn: DBConnection, user_id: str, bearer_token: str, refres
     conn.commit()
 
 
-# Sessions used to live forever server-side: the cookie carried a 30-day
-# Max-Age, but that is a browser-side courtesy — a stolen session id stayed
-# valid indefinitely. The server now owns the deadline.
-SESSION_TTL_DAYS = 30
-
-
 def create_session(conn: DBConnection, user_id: str) -> str:
     session_id = secrets.token_urlsafe(32)
     conn.execute(
@@ -578,9 +584,10 @@ def create_session(conn: DBConnection, user_id: str) -> str:
 
 
 def get_session_user(conn: DBConnection, session_id: str):
-    """Rows with a NULL expires_at are sessions created before this column
-    existed — treated as still valid so an in-flight session isn't logged
-    out by a deploy, and they age out through delete_expired_sessions()."""
+    """A NULL expires_at is accepted as a last-resort safety net only —
+    init_db() backfills those rows from created_at, so in practice none
+    remain. Without the backfill such a row would be both immortal here and
+    invisible to delete_expired_sessions()."""
     return conn.execute(
         "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id "
         "WHERE s.id = ? AND (s.expires_at IS NULL OR s.expires_at > ?)",
@@ -593,6 +600,17 @@ def delete_session(conn: DBConnection, session_id: str) -> None:
     conn.commit()
 
 
+def has_active_session(conn: DBConnection, user_id: str) -> bool:
+    """Whether this account still has a session somewhere — what tells a
+    logout on one device apart from the account's last logout."""
+    row = conn.execute(
+        "SELECT 1 AS one FROM sessions WHERE user_id = ? "
+        "AND (expires_at IS NULL OR expires_at > ?) LIMIT 1",
+        (user_id, _now()),
+    ).fetchone()
+    return row is not None
+
+
 def delete_user_sessions(conn: DBConnection, user_id: str) -> None:
     """Every session of one account — "log me out everywhere"."""
     conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
@@ -600,6 +618,8 @@ def delete_user_sessions(conn: DBConnection, user_id: str) -> None:
 
 
 def delete_expired_sessions(conn: DBConnection) -> int:
+    """Called at startup and on every login — the table would otherwise grow
+    without bound, since nothing else ever removes a row."""
     cur = conn.execute("DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at <= ?", (_now(),))
     conn.commit()
     return cur.rowcount or 0
