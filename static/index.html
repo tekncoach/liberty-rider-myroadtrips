@@ -406,6 +406,16 @@
   .tag-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600;
     padding: 3px 5px 3px 9px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
   .tag-chip button { border: none; background: none; padding: 0 3px; font-size: 12px; line-height: 1; color: inherit; cursor: pointer; }
+  #rideModalShare { padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--bg); font-size: 12.5px; }
+  #rideModalShare .share-hint { color: var(--muted); font-size: 11.5px; margin-top: 6px; line-height: 1.45; }
+  #rideModalShare .share-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  #rideModalShare input {
+    flex: 1; min-width: 200px; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  #rideModalShare .share-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  #rideModalShare .danger { color: #d1453b; }
+  .ride-shared-badge { color: var(--accent); font-size: 11px; margin-left: 4px; }
   #rideModalTagInput { padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; width: 130px; }
 
   ::-webkit-scrollbar { width: 9px; }
@@ -507,6 +517,7 @@
   <div id="rideModal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="rideModalTitle">
     <div id="rideModalHead">
       <h2 id="rideModalTitle"></h2>
+      <button id="rideModalShareBtn">🔗 Lien public</button>
       <a id="rideModalGpx" href="#"><button>📄 Télécharger en GPX</button></a>
       <button id="rideModalClose">Fermer</button>
     </div>
@@ -531,6 +542,7 @@
       <input id="rideModalTagInput" placeholder="+ Tag…" aria-label="Ajouter un tag à ce trajet" />
     </div>
     <div id="rideModalMerge"></div>
+    <div id="rideModalShare" hidden></div>
     <div id="rideModalMap"></div>
   </div>
 </div>
@@ -565,6 +577,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="/static/shared.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

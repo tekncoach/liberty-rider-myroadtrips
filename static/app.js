@@ -1,5 +1,4 @@
 const COLORS = ["#e0552b", "#2b7de0", "#2ba85a", "#a02be0", "#e0b02b", "#2bd0d0", "#e02b6a", "#7a8a2b"];
-const MONTHS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
 
 const VALID_TABS = ["ungrouped", "trips", "tags"];
 const savedTab = localStorage.getItem("activeTab");
@@ -24,6 +23,8 @@ const state = {
   map: null,
   rideModalMap: null,
   rideModalId: null,
+  // The open ride's live public link ({token, url, created_at}) or null.
+  rideShare: null,
   // Inverted from the old "showAll" (unchecked = only ungrouped/untagged):
   // now that "Mes traces" has search, an old already-organized ride must
   // still turn up by default — checking this narrows down to the "still
@@ -48,64 +49,6 @@ async function api(path, opts) {
     throw new Error(`${resp.status}: ${text}`);
   }
   return resp.status === 204 ? null : resp.json();
-}
-
-function fmtKm(m) {
-  return ((m || 0) / 1000).toFixed(1) + " km";
-}
-function fmtDuration(s) {
-  s = s || 0;
-  const h = Math.floor(s / 3600);
-  const m = Math.round((s % 3600) / 60);
-  return h > 0 ? `${h}h${String(m).padStart(2, "0")}` : `${m}min`;
-}
-function fmtDate(d) {
-  return new Date(d).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-function fmtDay(d) {
-  return new Date(d).toLocaleDateString("fr-FR", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
-}
-function fmtTime(d) {
-  return new Date(d).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-}
-function fmtAlt(m) {
-  return m == null ? "–" : Math.round(m) + " m";
-}
-function fmtAvgSpeed(distanceM, movingS) {
-  if (!movingS) return "–";
-  return Math.round((distanceM / 1000) / (movingS / 3600)) + " km/h";
-}
-function escapeHtml(s) {
-  return (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
-// --- polyline decoding ---
-// The API sends raw Google-encoded polyline strings (precision 5) instead of
-// decoded [lat,lon] arrays — ~6x smaller over the wire, and the decode runs
-// here on the client instead of on the CPU-throttled server. Standard
-// algorithm, matching Python's `polyline` library.
-function decodePolyline(str) {
-  let index = 0, lat = 0, lng = 0;
-  const coords = [];
-  while (index < str.length) {
-    let shift = 0, result = 0, byte;
-    do { byte = str.charCodeAt(index++) - 63; result += (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
-    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
-    shift = 0; result = 0;
-    do { byte = str.charCodeAt(index++) - 63; result += (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
-    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
-    coords.push([lat / 1e5, lng / 1e5]);
-  }
-  return coords;
-}
-// A ride's polyline arrives as a LIST of encoded strings (one per merge
-// member) — decode each and concatenate into one flat [lat,lon] array.
-function decodePolylines(encodedList) {
-  const points = [];
-  for (const enc of encodedList || []) {
-    if (enc) for (const p of decodePolyline(enc)) points.push(p);
-  }
-  return points;
 }
 
 // --- auth ---
@@ -632,7 +575,7 @@ function renderUngroupedRow(r) {
     <input type="checkbox" ${state.selected.has(r.id) ? "checked" : ""} />
     ${r.preview_picture_url ? `<img class="ride-thumb" loading="lazy" src="${escapeHtml(r.preview_picture_url)}" alt="" />` : ""}
     <div class="ride-body">
-      <div class="name">${escapeHtml(r.name || fmtDate(r.start_time))}</div>
+      <div class="name">${escapeHtml(r.name || fmtDate(r.start_time))}${r.shared ? `<span class="ride-shared-badge" title="Ce trajet a un lien public actif">🔗</span>` : ""}</div>
       <div class="meta">${fmtDate(r.start_time)} → ${fmtTime(new Date(new Date(r.start_time).getTime() + (r.duration || 0) * 1000))} · ${fmtKm(r.distance)} · ${fmtDuration(r.duration)}</div>
       ${tags.length ? `<div class="row-tags">${tagChips}${extraTags}</div>` : ""}
       <div class="badges">${badges.join("")}</div>
@@ -726,6 +669,7 @@ rideModalBackdrop.addEventListener("click", (e) => {
 function closeRideModal() {
   rideModalBackdrop.classList.remove("visible");
   releaseDialog(document.getElementById("rideModal"));
+  document.getElementById("rideModalShare").hidden = true;
   if (state.rideModalMap) {
     state.rideModalMap.remove();
     state.rideModalMap = null;
@@ -760,6 +704,11 @@ async function openRideModal(id) {
   renderElevationChart(ride.id);
   renderRideModalTags(ride.tags || []);
   renderRideModalMerge(ride);
+  // Collapsed on open — sharing is deliberate, so it takes a click to even
+  // see the controls. `state.rideShare` is null until this ride has a live
+  // public link (see the `share` field on /api/rides/{id}).
+  state.rideShare = ride.share || null;
+  document.getElementById("rideModalShare").hidden = true;
   const notesEl = document.getElementById("rideModalNotesText");
   notesEl.textContent = ride.notes || "";
   rideModalBackdrop.classList.add("visible");
@@ -864,6 +813,88 @@ async function onTagsChanged(rideId, tags) {
   if (ride) ride.tags = tags;
   state.tags = await api("/api/tags");
   if (state.tab === "ungrouped" || state.tab === "tags") renderList();
+}
+
+// --- public share link ---
+// Opt-in, one ride at a time: nothing here runs until the user asks for it,
+// and the two destructive actions (cutting a link, replacing it) both spell
+// out that people already holding the URL lose access. See
+// docs/PLAN-public-share.md.
+
+const rideModalShare = document.getElementById("rideModalShare");
+
+document.getElementById("rideModalShareBtn").addEventListener("click", () => {
+  rideModalShare.hidden = !rideModalShare.hidden;
+  if (!rideModalShare.hidden) renderRideModalShare();
+});
+
+function renderRideModalShare() {
+  const share = state.rideShare;
+  if (!share) {
+    rideModalShare.innerHTML = `
+      <div>Ce trajet est privé.</div>
+      <div class="share-actions"><button id="shareCreateBtn">Créer un lien public</button></div>
+      <div class="share-hint">Toute personne ayant le lien pourra voir la trace et les statistiques de ce trajet, sans compte. Départ et arrivée restent approximatifs.</div>
+    `;
+    document.getElementById("shareCreateBtn").addEventListener("click", () => setShare({ regenerate: false }));
+    return;
+  }
+  rideModalShare.innerHTML = `
+    <div class="share-row">
+      <input id="shareUrl" readonly value="${escapeHtml(share.url)}" />
+      <button id="shareCopyBtn">Copier</button>
+    </div>
+    <div class="share-actions">
+      <button id="shareRevokeBtn" class="danger">Désactiver le lien</button>
+      <button id="shareRotateBtn">Régénérer</button>
+    </div>
+    <div class="share-hint">Lien public actif depuis le ${escapeHtml(fmtDate(share.created_at))}.</div>
+  `;
+  document.getElementById("shareCopyBtn").addEventListener("click", copyShareUrl);
+  document.getElementById("shareRevokeBtn").addEventListener("click", async () => {
+    if (!confirm("Désactiver ce lien ? Les personnes à qui tu l'as envoyé ne pourront plus voir ce trajet.")) return;
+    await api(`/api/rides/${state.rideModalId}/share`, { method: "DELETE" });
+    state.rideShare = null;
+    renderRideModalShare();
+    await refreshSharedFlag(state.rideModalId, false);
+  });
+  document.getElementById("shareRotateBtn").addEventListener("click", async () => {
+    if (!confirm("Créer un nouveau lien ? L'ancien cessera immédiatement de fonctionner, y compris pour les personnes à qui tu l'as déjà envoyé.")) return;
+    await setShare({ regenerate: true });
+  });
+}
+
+async function setShare(body) {
+  state.rideShare = await api(`/api/rides/${state.rideModalId}/share`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  renderRideModalShare();
+  await refreshSharedFlag(state.rideModalId, true);
+}
+
+async function copyShareUrl() {
+  const input = document.getElementById("shareUrl");
+  const btn = document.getElementById("shareCopyBtn");
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch (e) {
+    // No clipboard API (or an insecure context): leave the URL selected so
+    // it's one keystroke away rather than failing silently.
+    input.select();
+    return;
+  }
+  btn.textContent = "Copié ✓";
+  setTimeout(() => { btn.textContent = "Copier"; }, 1200);
+}
+
+// Keeps the 🔗 badge in the sidebar list honest without refetching
+// everything — the list already holds this ride.
+async function refreshSharedFlag(rideId, shared) {
+  const ride = state.ungrouped.find((r) => r.id === rideId);
+  if (!ride) return;
+  ride.shared = shared;
+  if (state.tab === "ungrouped") renderList();
 }
 
 function renderRideModalMerge(ride) {
