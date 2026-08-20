@@ -1,3 +1,7 @@
 -r requirements.txt
-pytest
-httpx
+# Pinned like the runtime deps: an unpinned dev stack makes CI results
+# depend on the day they ran.
+pytest==9.1.1
+httpx==0.28.1
+ruff==0.16.4
+pip-audit==2.10.1

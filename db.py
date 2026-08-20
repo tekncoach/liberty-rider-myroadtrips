@@ -29,7 +29,7 @@ import os
 import pathlib
 import secrets
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 DB_PATH = pathlib.Path(__file__).parent / "data" / "rides.db"
 MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
@@ -55,7 +55,7 @@ def _now(offset_days: int = 0) -> str:
     such function, so the timestamp is computed here and bound as a plain
     parameter instead of relying on server-side SQL. `offset_days` shifts it
     into the future (session deadlines)."""
-    return (datetime.now(timezone.utc) + timedelta(days=offset_days)).strftime("%Y-%m-%d %H:%M:%S")
+    return (datetime.now(UTC) + timedelta(days=offset_days)).strftime("%Y-%m-%d %H:%M:%S")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (

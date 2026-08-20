@@ -12,6 +12,9 @@ the target first via db.purge_user_data before copying).
 Not migrated: `sessions` (ephemeral, meaningless across a DB swap) and the
 `schema_migrations` bookkeeping table (target manages its own).
 """
+# ruff: noqa: S608 — every statement below interpolates column *names* read
+# from the source schema plus a count of `?` placeholders; values are always
+# bound. Same rule as the app (see CONTRIBUTING.md).
 from __future__ import annotations
 
 import argparse
@@ -21,7 +24,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-import db  # noqa: E402
+import db
 
 
 def _rows(conn: sqlite3.Connection, query: str, params=()) -> list[dict]:

@@ -1,0 +1,34 @@
+# Tooling config only — the app is still run from the Makefile / uvicorn,
+# not installed as a package.
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [".venv", "__pycache__", "data"]
+
+[tool.ruff.lint]
+# E,F,W,I: pycodestyle/pyflakes/imports. UP: modernisation. B: bugbear.
+# S: flake8-bandit — the cheap SAST pass (hardcoded secrets, requests
+# without timeouts, string-built SQL), which is why it's here at all.
+select = ["E", "F", "W", "I", "UP", "B", "S", "RUF"]
+ignore = [
+  "E501",   # line length is enforced by the formatter, not the linter
+  "S104",   # binding 0.0.0.0 is the deployment's call, not the code's
+  "B008",   # `Depends(...)`/`Cookie(...)` in defaults is the FastAPI idiom
+  "B905",   # zip(strict=) changes runtime behaviour; a separate decision
+  "RUF005", # style-only, and the existing spelling reads fine here
+  "RUF007", # ditto (zip vs itertools.pairwise)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, and carry throwaway credentials by design.
+"tests/*" = ["S101", "S105", "S106", "S107", "B011", "RUF012"]
+# S608 flags f-string SQL. Every hit here interpolates only a *count* of
+# `?` placeholders — never a value — which the audit verified line by line
+# and CONTRIBUTING.md states as a rule. Kept off in these two files rather
+# than repo-wide, so new SQL elsewhere is still checked.
+"app.py" = ["S608"]
+"db.py" = ["S608"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

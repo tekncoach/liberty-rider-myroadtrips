@@ -1,8 +1,9 @@
 """DELETE /api/account/data — maintainer-only tool (gated on ADMIN_USER_IDS)
 to wipe one's own synced data and re-test onboarding from empty. Previously
 had zero test coverage."""
-import db as db_module
 from conftest import make_ride
+
+import db as db_module
 
 
 def _seed_ride(user_id, ride_id, start_time, **kw):

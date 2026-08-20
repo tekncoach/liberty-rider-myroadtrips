@@ -286,6 +286,7 @@ def _merged_ride_dict(conn, row, members_map=None) -> dict:
         return base
 
     from datetime import timedelta
+
     from utils import parse_iso
 
     first, last = group[0], group[-1]
@@ -697,6 +698,7 @@ class SyncRequest(BaseModel):
 # accepted and stored verbatim. These caps are generous for real use (a
 # roadtrip name is a few words, a note a few paragraphs) and only exist to
 # stop a client from bloating the database or the rendered page.
+MAX_PEAK_LOOKUPS = 12
 NAME_MAX = 200
 NOTES_MAX = 10_000
 RIDE_IDS_MAX = 1_000
@@ -799,7 +801,7 @@ def api_login(req: LoginRequest, response: Response, request: Request):
     try:
         lr_user = client.get_current_user()
     except requests.exceptions.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}") from e
 
     conn = db.connect()
     try:
@@ -857,7 +859,7 @@ def api_auth_profile(user=Depends(get_session_user)):
         client = _live_client_for(conn, user)
         lr_user = client.get_current_user()
     except requests.exceptions.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}") from e
     finally:
         conn.close()
     return {"first_name": lr_user.get("firstName") or user["first_name"], "manual_ride_count": lr_user.get("manualRideCount")}
@@ -924,10 +926,10 @@ def api_sync(req: SyncRequest, user=Depends(get_session_user)):
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
-            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.")
-        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.") from e
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}") from e
     except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e
     return summary
 
 
@@ -1109,7 +1111,12 @@ def api_ride_cols(ride_id: str, user=Depends(get_session_user)):
         # noise on the chart, so unnamed detections are silently dropped.
         valid_pauses = [p for p in pauses if p.get("lat") is not None and p.get("lon") is not None]
         cols = []
-        for i in _detect_peaks(profile):
+        # One Overpass round-trip (15s timeout) per candidate peak, on a
+        # single worker: an unusually jagged track could otherwise tie up the
+        # server for minutes and get its IP throttled by Overpass. A long
+        # ride realistically crosses a handful of named passes, so the cap
+        # only ever bites on pathological profiles.
+        for i in _detect_peaks(profile)[:MAX_PEAK_LOOKUPS]:
             (lat, lon), refined_elev = _refine_peak_point(conn, points, sample_idx, valid_pauses, i)
             name = mountain_pass.get_pass_name(conn, lat, lon, hint_elevation=refined_elev)
             if name:

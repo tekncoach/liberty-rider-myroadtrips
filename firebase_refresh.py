@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import requests
 
-SECURE_TOKEN_URL = "https://securetoken.googleapis.com/v1/token"
+SECURE_TOKEN_URL = "https://securetoken.googleapis.com/v1/token"  # noqa: S105 — an endpoint URL, not a secret
 SIGN_IN_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
 
 
