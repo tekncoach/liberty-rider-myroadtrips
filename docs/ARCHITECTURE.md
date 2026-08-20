@@ -62,6 +62,11 @@ no browser automation, no other login path.
   `ride_tags` via both, `sync_state` via `user_id` directly). Every query in
   `app.py` filters by the current session's `user_id` — there is no
   endpoint that returns unscoped data.
+- The single exception, and it is scoped just as tightly by something else:
+  a ride the owner has opted into a **public share link** is readable with
+  no session, keyed by an unguessable token rather than by `user_id`. See
+  **Public share links** below for why that path cannot be walked into
+  anybody else's data.
 
 **Login flow** (`POST /api/auth/login` in app.py): exchange email/password
 with Firebase → fetch `currentUser` from Liberty Rider's API using the
@@ -83,6 +88,74 @@ the stored `refresh_token` via `firebase_refresh.refresh_id_token` and
 persists the new tokens, transparently, before retrying. Used by
 `/api/sync`, `/api/sync/status` and `/api/auth/profile` so an expired token
 never surfaces to the user as an error during normal use.
+
+## Public share links
+
+One ride at a time can be opted into a URL that works with no account —
+`/t/{token}`. This is the only part of the app that answers to a visitor
+with no session, so it is built around two invariants rather than around
+convenience.
+
+**1. The public read path resolves by token, and by token only.**
+`_get_shared_ride(conn, token)` in app.py is the deliberate counterpart of
+`_get_owned_ride(conn, ride_id, user_id)`: it takes no ride id and no user
+id. A ride id passed where a token belongs cannot match, so there is no way
+to walk the URL space into anybody's data — `GET /api/public/rides/{ride_id}`
+is a 404 even for a ride that *is* shared, and a test pins that down.
+
+**2. The public payload is an allow-list, not a filtered private one.**
+`_public_ride_dict` enumerates every field it emits instead of deleting
+fields from `_merged_ride_dict`. A field added to the private ride dict
+later is therefore invisible publicly by default rather than leaking by
+default. `tests/test_public_share.py` asserts the exact key set, so widening
+it has to be a decision someone makes, not a side effect.
+
+- **`ride_shares`** — `token` (PK), `ride_id`, `user_id`, `created_at`,
+  `revoked_at`, `expires_at`. One row per token **ever issued**, never
+  deleted. Revoking sets `revoked_at`; regenerating revokes the active row
+  and inserts a new one. Keeping revoked rows is what makes a regenerated
+  link genuinely un-resurrectable — the primary key spans active and revoked
+  tokens alike, so a fresh draw can never reuse something already sent out —
+  and it leaves an auditable trail of what was once public. A partial unique
+  index (`WHERE revoked_at IS NULL`) caps it at one *active* link per ride,
+  so neither the API nor the UI ever reasons about a list of live links.
+  `expires_at` is never written by the current app but is already honoured
+  by the lookup query, so time-limited links need no schema change.
+- **The token** — `secrets.token_urlsafe(16)`: 128 bits from the OS CSPRNG,
+  22 URL-safe characters. Same primitive as `create_session`. Never the ride
+  id (which is the Liberty Rider id, traceable back to the account), never a
+  counter, never a hash of either.
+- **Unknown, revoked and expired are the same 404**, with the same body. A
+  distinct status (410, say) would confirm that a token once existed. The
+  *page* at `/t/{token}` still answers 200 with a sentence in French, since
+  it says the same thing for all three.
+- **Track truncation** — `SHARE_TRUNCATION_M` (250 m) is trimmed off both
+  ends of the published track, and any pause inside either radius is
+  dropped, before the payload is built. Server-side, so those points are
+  absent rather than merely unrendered. A contiguous run is trimmed from
+  each end rather than every point within the radius being filtered out:
+  filtering would punch a hole mid-track on a loop ride and draw a straight
+  line across it, which reads as a glitch and points straight at the hole.
+  The honest limit: a loop passing back near its own start mid-ride still
+  shows that passage. Stats are **not** recomputed from the trimmed track —
+  the distance shown publicly stays the one the owner sees.
+- **Headers** — `Referrer-Policy: no-referrer` on the page. Without it the
+  token travels to the OpenStreetMap tile servers in the `Referer` of every
+  tile the map loads, handing a third party the URL the owner chose who to
+  send to. Plus `X-Robots-Tag: noindex, nofollow` on the page and the JSON,
+  a `<meta name="robots">` in the HTML, and `Disallow: /t/` in `robots.txt`.
+- **Merging revokes** — a ride absorbed into a merge keeps existing as a
+  row, so its own link would keep resolving to a fragment of what the owner
+  now thinks of as one ride. `api_merge_rides` cuts those links; the merged
+  ride can be re-shared. `purge_user_data` deletes share rows with the data
+  they point at.
+- **The page** — `static/share.html` + `static/share.js`, standalone, no
+  session, no `state`. Formatting and polyline decoding come from
+  `static/shared.js`, which the logged-in app loads too (two plain `<script>`
+  tags, no modules, no build step — the same way Leaflet's `L` is picked
+  up). `/t/{token}` serves the file with this ride's `<title>` and Open
+  Graph tags substituted into a placeholder, so a link pasted into a chat
+  previews as the ride; a `str.replace`, not a template engine.
 
 ## Data model (`db.py`)
 
@@ -115,6 +188,8 @@ never surfaces to the user as an error during normal use.
   semantics — a tag can span rides from any year, which is the point (e.g. a
   "Paris" tag collecting every ride that passed through the city, 2022 and
   2026 alike).
+- **`ride_shares`** — public share links, one row per token ever issued.
+  See **Public share links** above.
 - **`sync_state`** — `(user_id, key)` → `value`; currently one key per user
   (`last_sync_max_start_time`) tracking the newest `startTime` synced so
   far, for incremental syncs. It records what the *last sync run* saw, which

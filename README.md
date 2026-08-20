@@ -64,6 +64,12 @@ you're running this for yourself or hosting it for a few people.
   OpenStreetMap map, color-coded per day, with ride preview thumbnails
   pulled from Liberty Rider's own static tile server.
 - **GPX export** — download any ride, roadtrip, or tag as a GPX file.
+- **Public share link** — opt one ride into an unguessable URL that anyone
+  can open without an account (a map of the track plus the basic stats,
+  nothing else about you). Off by default, one ride at a time, revocable,
+  and re-issuable with a fresh token that kills the old link. The first and
+  last 250 m of the track are trimmed off before it leaves the server, so
+  the link doesn't hand out your front door.
 
 ## Data & external services
 

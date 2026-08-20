@@ -3,7 +3,9 @@
 Multi-tenant: every ride/roadtrip/tag belongs to a `users` row, keyed
 directly by the user's own Liberty Rider id (`currentUser.id` — no separate
 internal id is minted). Every request is scoped to the logged-in session's
-user — see the `get_session_user` dependency in app.py.
+user — see the `get_session_user` dependency in app.py — except the public
+share path, which is scoped by an unguessable token instead (`ride_shares`,
+and `get_share_by_token` below).
 
 Two backends, picked by the presence of a `DATABASE_URL` env var:
 - Unset (local dev, tests): a single-file SQLite database at `DB_PATH`. Runs
