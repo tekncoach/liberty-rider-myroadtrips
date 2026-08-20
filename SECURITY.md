@@ -1,4 +1,4 @@
-# Politique de sécurité
+﻿# Politique de sécurité
 
 Merci de signaler tout problème de sécurité — ce projet manipule des
 identifiants Liberty Rider et des traces GPS, deux catégories de données où
