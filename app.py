@@ -1015,10 +1015,10 @@ def api_sync_status(user=Depends(get_session_user)):
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
-            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.")
-        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.") from e
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}") from e
     except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 # --- rides ------------------------------------------------------------
