@@ -35,7 +35,22 @@ jobs:
       # CI is red from the first push.
       - run: mypy .
       - name: Audit dependencies for known vulnerabilities
-        run: pip-audit -r requirements.txt
+        run: pip-audit -r requirements.lock
+      # Not a full pip-compile diff: that depends on the Python and
+      # pip-tools versions doing the generating, and a false red is worse
+      # than a stale lock. This just checks every pin in requirements.txt
+      # is actually in the lock — which is what Dependabot would break.
+      - name: Check the lock file covers requirements.txt
+        run: |
+          while read -r line; do
+            case "$line" in ''|'#'*) continue ;; esac
+            pkg="${line%%[*}"; pkg="${pkg%%==*}"; ver="${line##*==}"
+            grep -Eqi "^${pkg}(\[[^]]*\])?==${ver}" requirements.lock || {
+              echo "requirements.lock is stale for ${pkg}==${ver}"
+              echo "regenerate: pip-compile --generate-hashes --output-file=requirements.lock requirements.txt"
+              exit 1
+            }
+          done < requirements.txt
 
   test:
     runs-on: ubuntu-latest

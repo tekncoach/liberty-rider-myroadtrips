@@ -87,3 +87,17 @@ not on a function signature.
    unrelated fixes/features into separate PRs.
 3. Make sure `make test` passes.
 4. Open a PR describing what changed and why.
+
+## Dependencies
+
+`requirements.txt` is the file you edit: one line per direct dependency,
+pinned to an exact version. `requirements.lock` is generated from it and
+pins the *transitive* tree with hashes, so a build installs the same bytes
+today and in six months. CI audits the lock, and fails if a pin in
+requirements.txt is missing from it.
+
+After changing requirements.txt — including when merging a Dependabot PR:
+
+```bash
+pip-compile --generate-hashes --output-file=requirements.lock requirements.txt
+```
