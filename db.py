@@ -31,6 +31,8 @@ import secrets
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+import crypto
+
 DB_PATH = pathlib.Path(__file__).parent / "data" / "rides.db"
 MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
 
@@ -564,13 +566,45 @@ def upsert_user(conn: DBConnection, liberty_rider_id: str, first_name: str | Non
     conn.commit()
 
 
+# Columns holding Liberty Rider credentials — encrypted at rest when a key
+# is configured (see crypto.py, finding APP-01).
+SECRET_COLUMNS = ("bearer_token", "refresh_token", "firebase_api_key")
+
+
 def save_user_tokens(conn: DBConnection, user_id: str, bearer_token: str, refresh_token: str | None, api_key: str | None) -> None:
     conn.execute(
         "UPDATE users SET bearer_token = ?, refresh_token = COALESCE(?, refresh_token), "
         "firebase_api_key = COALESCE(?, firebase_api_key) WHERE id = ?",
-        (bearer_token, refresh_token, api_key, user_id),
+        (
+            crypto.encrypt(bearer_token),
+            crypto.encrypt(refresh_token),
+            crypto.encrypt(api_key),
+            user_id,
+        ),
     )
     conn.commit()
+
+
+def encrypt_plaintext_tokens(conn: DBConnection) -> int:
+    """Migrate rows written before a key was configured. Idempotent, and
+    cheap enough to run on every boot: rows already carrying the marker are
+    skipped by crypto.encrypt(), and there are as many rows as accounts."""
+    if not crypto.is_enabled():
+        return 0
+    rows = conn.execute("SELECT id, bearer_token, refresh_token, firebase_api_key FROM users").fetchall()
+    migrated = 0
+    for row in rows:
+        values = {col: row[col] for col in SECRET_COLUMNS}
+        if not any(v and not v.startswith(crypto.PREFIX) for v in values.values()):
+            continue
+        conn.execute(
+            "UPDATE users SET bearer_token = ?, refresh_token = ?, firebase_api_key = ? WHERE id = ?",
+            (*(crypto.encrypt(values[col]) for col in SECRET_COLUMNS), row["id"]),
+        )
+        migrated += 1
+    if migrated:
+        conn.commit()
+    return migrated
 
 
 def create_session(conn: DBConnection, user_id: str) -> str:
@@ -588,11 +622,20 @@ def get_session_user(conn: DBConnection, session_id: str):
     init_db() backfills those rows from created_at, so in practice none
     remain. Without the backfill such a row would be both immortal here and
     invisible to delete_expired_sessions()."""
-    return conn.execute(
+    row = conn.execute(
         "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id "
         "WHERE s.id = ? AND (s.expires_at IS NULL OR s.expires_at > ?)",
         (session_id, _now()),
     ).fetchone()
+    if row is None:
+        return None
+    # Returned as a plain dict (sqlite3.Row is read-only) with the credential
+    # columns decrypted, so every caller keeps reading user["bearer_token"]
+    # without knowing whether encryption is on.
+    user = dict(row)
+    for col in SECRET_COLUMNS:
+        user[col] = crypto.decrypt(user.get(col))
+    return user
 
 
 def delete_session(conn: DBConnection, session_id: str) -> None:
