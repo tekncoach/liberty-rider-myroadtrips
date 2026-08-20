@@ -3,7 +3,9 @@
 Multi-tenant: every ride/roadtrip/tag belongs to a `users` row, keyed
 directly by the user's own Liberty Rider id (`currentUser.id` — no separate
 internal id is minted). Every request is scoped to the logged-in session's
-user — see the `get_session_user` dependency in app.py.
+user — see the `get_session_user` dependency in app.py — except the public
+share path, which is scoped by an unguessable token instead (`ride_shares`,
+and `get_share_by_token` below).
 
 Two backends, picked by the presence of a `DATABASE_URL` env var:
 - Unset (local dev, tests): a single-file SQLite database at `DB_PATH`. Runs
@@ -160,9 +162,21 @@ CREATE TABLE IF NOT EXISTS mountain_pass_cache (
 -- detail is opened, not backfilled for the whole history at once (an
 -- eager backfill would mean hundreds of Overpass calls against a free,
 -- rate-limited public API).
+--
+-- Where each col sits (distance along the track, altitude, coordinates) is
+-- stored alongside its name so a marker can be redrawn from this table
+-- alone. That is what lets the public share page show the same cols as the
+-- modal without recomputing anything: reading a col costs a SELECT, only
+-- *finding* one costs an Overpass call. Null on rows written before those
+-- columns existed — the next time that ride's detail is opened, its rows
+-- are replaced wholesale and the positions come back.
 CREATE TABLE IF NOT EXISTS ride_cols (
   ride_id TEXT REFERENCES rides(id),
-  name TEXT NOT NULL
+  name TEXT NOT NULL,
+  distance_km REAL,
+  elevation REAL,
+  lat REAL,
+  lon REAL
 );
 CREATE INDEX IF NOT EXISTS idx_ride_cols_ride ON ride_cols(ride_id);
 
@@ -179,12 +193,30 @@ CREATE TABLE IF NOT EXISTS ride_tags (
   PRIMARY KEY (ride_id, tag_id)
 );
 
+-- A public share link for one ride. One row per token EVER ISSUED, never
+-- deleted: revoking sets `revoked_at`, regenerating revokes the active row
+-- and inserts a new one. Keeping revoked rows is what guarantees a
+-- regenerated token can never resurrect an old link — the PRIMARY KEY spans
+-- active and revoked tokens alike. See docs/PLAN-public-share.md.
+CREATE TABLE IF NOT EXISTS ride_shares (
+  token TEXT PRIMARY KEY,
+  ride_id TEXT NOT NULL REFERENCES rides(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  revoked_at TEXT,
+  expires_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_rides_start_time ON rides(start_time);
 CREATE INDEX IF NOT EXISTS idx_rides_roadtrip ON rides(roadtrip_id);
 CREATE INDEX IF NOT EXISTS idx_pauses_ride ON pauses(ride_id);
 CREATE INDEX IF NOT EXISTS idx_resumes_ride ON resumes(ride_id);
 CREATE INDEX IF NOT EXISTS idx_ride_tags_tag ON ride_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+-- At most one ACTIVE share per ride (revoked ones accumulate freely), so
+-- the UI never has to reason about a list of live links for one ride.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ride_shares_active ON ride_shares(ride_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_ride_shares_user ON ride_shares(user_id);
 """
 
 # Indexes on columns added via migration (below) — created after the ALTER
@@ -314,6 +346,14 @@ def init_db() -> None:
             conn.execute("ALTER TABLE rides ADD COLUMN user_id TEXT REFERENCES users(id)")
         if "notes" not in rides_cols:
             conn.execute("ALTER TABLE rides ADD COLUMN notes TEXT")
+
+        # Where each col sits, added after the fact (see the ride_cols
+        # comment in SCHEMA): existing rows keep their name and get NULL
+        # positions until that ride's detail is next opened.
+        ride_cols_cols = {row["name"] for row in conn.execute("PRAGMA table_info(ride_cols)")}
+        for column in ("distance_km", "elevation", "lat", "lon"):
+            if column not in ride_cols_cols:
+                conn.execute(f"ALTER TABLE ride_cols ADD COLUMN {column} REAL")
 
         roadtrips_cols = {row["name"] for row in conn.execute("PRAGMA table_info(roadtrips)")}
         if "user_id" not in roadtrips_cols:
@@ -545,7 +585,8 @@ def claim_orphaned_data(conn: DBConnection, user_id: str) -> None:
 
 def purge_user_data(conn: DBConnection, user_id: str) -> None:
     """Wipes everything synced/organized for this account (rides, roadtrips,
-    tags, sync cursor) so the next sync starts from a genuinely empty state —
+    tags, public share links, sync cursor) so the next sync starts from a
+    genuinely empty state —
     lets one Liberty Rider account be used to re-test onboarding repeatedly.
     Leaves the `users` row and current session alone (still logged in), and
     leaves the global elevation/mountain-pass caches alone (not user data —
@@ -562,6 +603,10 @@ def purge_user_data(conn: DBConnection, user_id: str) -> None:
     conn.execute(
         "DELETE FROM ride_tags WHERE ride_id IN (SELECT id FROM rides WHERE user_id = ?)", (user_id,)
     )
+    # Before the rides they reference — and a purge must genuinely take
+    # every public link down with the data, not leave live URLs pointing at
+    # rows that no longer exist.
+    conn.execute("DELETE FROM ride_shares WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM rides WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM roadtrips WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM tags WHERE user_id = ?", (user_id,))
@@ -689,6 +734,98 @@ def clear_refresh_token(conn: DBConnection, user_id: str) -> None:
     own and can mint Liberty Rider tokens indefinitely, so keeping it for an
     account that just logged out is pure liability."""
     conn.execute("UPDATE users SET refresh_token = NULL, bearer_token = NULL WHERE id = ?", (user_id,))
+    conn.commit()
+
+
+# --- public share links -------------------------------------------------
+# A shared ride is reachable by token and by token only — there is no
+# user_id anywhere on the public read path, the token *is* the
+# authorization. See docs/PLAN-public-share.md for the threat model.
+
+# 128 bits from the OS CSPRNG, 22 URL-safe characters — short enough to
+# paste into a message, far beyond brute-forcing. Same primitive as
+# create_session above, which draws 32 bytes; a share link is narrower in
+# what it grants than a session, so 16 is the right side of enough.
+SHARE_TOKEN_BYTES = 16
+
+
+def create_ride_share(conn: DBConnection, user_id: str, ride_id: str) -> str:
+    """Issues a new public token for this ride and returns it. Callers must
+    make sure no active share exists first (the partial unique index will
+    refuse a second one) — use `get_or_create_ride_share` instead."""
+    token = secrets.token_urlsafe(SHARE_TOKEN_BYTES)
+    conn.execute(
+        "INSERT INTO ride_shares (token, ride_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+        (token, ride_id, user_id, _now()),
+    )
+    conn.commit()
+    return token
+
+
+def get_active_share_for_ride(conn: DBConnection, ride_id: str):
+    return conn.execute(
+        "SELECT * FROM ride_shares WHERE ride_id = ? AND revoked_at IS NULL", (ride_id,)
+    ).fetchone()
+
+
+def get_or_create_ride_share(conn: DBConnection, user_id: str, ride_id: str):
+    """Idempotent: re-sharing an already-shared ride hands back the same
+    link rather than quietly invalidating the one already sent."""
+    existing = get_active_share_for_ride(conn, ride_id)
+    if existing:
+        return existing
+    create_ride_share(conn, user_id, ride_id)
+    return get_active_share_for_ride(conn, ride_id)
+
+
+def revoke_ride_share(conn: DBConnection, ride_id: str) -> bool:
+    """Kills the ride's active link, if any. Rows are never deleted — a
+    revoked token stays on file so it can never be re-issued, and so the
+    history of what was once public is auditable. Returns whether anything
+    was actually revoked (callers treat revocation as idempotent)."""
+    active = get_active_share_for_ride(conn, ride_id)
+    if not active:
+        return False
+    conn.execute(
+        "UPDATE ride_shares SET revoked_at = ? WHERE token = ?", (_now(), active["token"])
+    )
+    conn.commit()
+    return True
+
+
+def regenerate_ride_share(conn: DBConnection, user_id: str, ride_id: str):
+    """Revoke-then-issue, in that order: the old link is dead from this
+    moment on, including for everyone it was already sent to, and the new
+    token is a fresh 128-bit draw that cannot collide with any token ever
+    issued (they all remain in the table under the PRIMARY KEY)."""
+    revoke_ride_share(conn, ride_id)
+    create_ride_share(conn, user_id, ride_id)
+    return get_active_share_for_ride(conn, ride_id)
+
+
+def get_share_by_token(conn: DBConnection, token: str):
+    """The whole public read path starts here. Only an active, unexpired
+    token resolves; a revoked, expired or unknown one yields None, and
+    callers must render all three identically (see app.py) so the response
+    never confirms that a token once existed."""
+    return conn.execute(
+        "SELECT * FROM ride_shares WHERE token = ? AND revoked_at IS NULL "
+        "AND (expires_at IS NULL OR expires_at > ?)",
+        (token, _now()),
+    ).fetchone()
+
+
+def revoke_shares_for_rides(conn: DBConnection, ride_ids: list[str]) -> None:
+    """Used when rides get absorbed into a merge: their own public links
+    would keep pointing at a row that is no longer the group's
+    representative, so they're cut instead of silently going stale."""
+    if not ride_ids:
+        return
+    placeholders = ", ".join("?" * len(ride_ids))
+    conn.execute(
+        f"UPDATE ride_shares SET revoked_at = ? WHERE revoked_at IS NULL AND ride_id IN ({placeholders})",
+        (_now(), *ride_ids),
+    )
     conn.commit()
 
 

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Unlisted, and no business in a search index. The X-Robots-Tag header
+     on this route says the same thing for crawlers that never parse HTML. -->
+<meta name="robots" content="noindex, nofollow" />
+<!-- Belt and braces with the Referrer-Policy header: the share token must
+     never travel in a Referer to the OpenStreetMap tile servers. -->
+<meta name="referrer" content="no-referrer" />
+<meta name="theme-color" content="#c94722" />
+<link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
+<!-- Replaced server-side by app.py's _render_share_page with this ride's
+     own <title> and Open Graph tags, so a link pasted into a chat previews
+     as the ride rather than as a generic page. -->
+<!--HEAD_META-->
+<link rel="stylesheet" href="/static/shared.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
+      crossorigin="anonymous" referrerpolicy="no-referrer" />
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f3f0ea; --panel: #faf8f4; --border: #ddd6c8; --text: #262220; --muted: #726a5f;
+    --accent: #e0552b; --shadow: 0 1px 2px #00000012, 0 8px 24px #2b242010;
+    --pause: #2b7de0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #211e1c; --panel: #29251f; --border: #453f36; --text: #f1ece2; --muted: #a89e8d;
+      --accent: #f0794f; --shadow: 0 1px 2px #00000040;
+      --pause: #5b9eef;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  #page { flex: 1; display: flex; flex-direction: column; width: min(920px, 100%); margin: 0 auto; padding: 18px 16px 0; gap: 12px; }
+
+  header h1 { font-size: 20px; margin: 0 0 4px; line-height: 1.25; }
+  header p { margin: 0; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* Same reading order as the ride modal in the app: each chart sits right
+     above the numbers it explains — the trajet/pause chronology over the
+     time breakdown, the altitude profile over distance and elevation. */
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+  .panel-section { padding: 12px 16px; }
+  .panel-section + .panel-section { border-top: 1px solid var(--border); }
+  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 10px; margin-top: 10px; }
+  @media (max-width: 560px) { .stat-row { grid-template-columns: repeat(2, 1fr); } }
+  .mini-chart { max-width: none; }
+
+  #map { flex: 1; min-height: 340px; border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; background: var(--panel); }
+  .leaflet-container { background: var(--panel); font-family: inherit; }
+
+  #notice { margin: 0; font-size: 11.5px; color: var(--muted); }
+
+  footer { padding: 14px 16px 18px; text-align: center; font-size: 12px; color: var(--muted); }
+  footer a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  footer a:hover { text-decoration: underline; }
+
+  /* Loading and dead-link states share one centred card — a visitor
+     opening an old link from a chat gets a sentence, not a raw error. */
+  #status { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 16px; }
+  #statusCard { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); padding: 26px 28px; max-width: 420px; text-align: center; }
+  #statusCard h1 { font-size: 17px; margin: 0 0 8px; }
+  #statusCard p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.55; }
+  #statusCard a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="status">
+  <div id="statusCard">
+    <h1 id="statusTitle">Chargement…</h1>
+    <p id="statusText">Un instant, on récupère la trace.</p>
+  </div>
+</div>
+
+<div id="page" hidden>
+  <header>
+    <h1 id="rideName"></h1>
+    <p id="rideSubtitle"></p>
+  </header>
+  <div class="panel">
+    <div class="panel-section">
+      <div id="timeline" class="mini-chart"></div>
+      <div id="statsTime" class="stat-row"></div>
+    </div>
+    <div class="panel-section">
+      <div id="elevation" class="mini-chart"></div>
+      <div id="statsTrack" class="stat-row"></div>
+    </div>
+  </div>
+  <div id="map"></div>
+  <p id="notice"></p>
+</div>
+
+<footer id="footer" hidden>
+  <span id="footerLead">Trace partagée depuis</span> <a href="/">Carnet de Route</a>
+</footer>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="/static/shared.js"></script>
+<script src="/static/share.js"></script>
+</body>
+</html>

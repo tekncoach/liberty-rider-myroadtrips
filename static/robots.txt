@@ -2,6 +2,12 @@
 # in front of per-account ride data and /api is that data itself — neither
 # belongs in an index (index.html carries a matching `noindex` for crawlers
 # that reach it through a link rather than through this file).
+#
+# /t/ is a shared ride: unlisted rather than secret, but its owner chose who
+# to send it to, not a search engine. Naming the prefix here gives nothing
+# away — there is no token in it — and covers crawlers that fetch a URL
+# before reading the `noindex` the page and its headers both carry.
 User-agent: *
 Disallow: /app
 Disallow: /api/
+Disallow: /t/

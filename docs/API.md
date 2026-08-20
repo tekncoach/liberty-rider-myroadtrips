@@ -123,9 +123,77 @@ shape as above.
 ### `GET /api/rides/{ride_id}/export.gpx`
 Downloads the ride (its full merge group, if any) as a GPX file.
 
+### `POST /api/rides/{ride_id}/share`
+Body: `{ "regenerate": false }` (optional; `false` is the default). Opts the
+ride into a public link and returns `{ token, url, created_at }`.
+`regenerate: false` is get-or-create — sharing an already-shared ride hands
+back the same link. `regenerate: true` issues a **new** token and revokes
+the current one, so every copy of the old URL stops working immediately.
+404 if the ride doesn't belong to the session's account.
+
+### `DELETE /api/rides/{ride_id}/share`
+Revokes the ride's public link. Returns `{ "revoked": true|false }` —
+`false` when there was nothing live to revoke (idempotent).
+
 ### `DELETE /api/rides/{ride_id}/roadtrip`
 Detaches a ride from its roadtrip (the ride itself is untouched, just
 ungrouped again).
+
+## Public (no session)
+
+The only endpoints in this API that answer without a session cookie. They
+resolve a ride **by share token only** — never by ride id, never scoped by
+user — and return an explicit allow-list of fields. See
+`docs/ARCHITECTURE.md` and `docs/PLAN-public-share.md`.
+
+### `GET /api/public/rides/{token}`
+The shared ride: `{ name, start_time, distance, duration,
+duration_without_pauses, total_pauses_duration, pause_count,
+maximum_altitude, polyline, pauses, timeline, track_truncated }`. `polyline` is a one-element list of an encoded polyline
+string (decoded client-side, same as the private detail endpoint);
+`pauses` is `[{lat, lon, automatic}, ...]`.
+
+Notably **absent**, all deliberately: the ride id, `notes`, `tags`,
+`roadtrip_id`/`merged_into`/`merge_ride_ids`, `preview_picture_url`,
+`start_lat`/`start_lon`/`stop_lat`/`stop_lon`, `vehicle_brand`/
+`vehicle_model`, and anything identifying the owner. `track_truncated` says whether the track was trimmed at both ends
+(it nearly always is — see `SHARE_TRUNCATION_M` in `app.py`).
+
+**404** for an unknown, revoked *or* expired token, with an identical body
+in all three cases: a distinct status would confirm that a token once
+existed. Responses carry `X-Robots-Tag: noindex, nofollow`.
+
+### `GET /api/public/rides/{token}/elevation`
+The shared ride's estimated elevation profile — same shape as
+`GET /api/rides/{id}/elevation`, computed from the **truncated** track so it
+can't give back the endpoint metres the map withholds, and with pauses
+inside either truncation radius already dropped. Fetched after the page has
+drawn, like the private one, because open-elevation can be slow on a track
+nobody has looked at yet. Same 404 rules and `X-Robots-Tag` as above.
+
+### `GET /api/public/rides/{token}/cols`
+The named cols already known for this ride — `{ cols: [{name, distance_km,
+elevation, lat, lon}, ...] }`, the same markers the owner sees, with
+`distance_km` rebased onto the truncated track's own axis and any col
+inside a trimmed end dropped.
+
+This endpoint **only reads** `ride_cols`; it never runs the Overpass lookup
+that finds a col, and never writes. Finding a col is the owner's modal's
+job — and since the share link is created from that same modal, a shared
+ride has already been through it. Rows stored before positions were kept
+(name only) are skipped rather than drawn at 0 km; they come back the next
+time that ride's detail is opened. Same 404 rules and `X-Robots-Tag`.
+
+### `GET /t/{token}`
+The public page itself (`static/share.html`), with this ride's `<title>` and
+Open Graph tags injected so a link pasted into a chat previews as the ride.
+Always **200**, even for a dead token — the page then says, in French, that
+the link is no longer active. Carries `Referrer-Policy: no-referrer` (so the
+token never travels to the OpenStreetMap tile servers in a `Referer`) and
+`X-Robots-Tag: noindex, nofollow`.
+
+### `GET /robots.txt`
+Disallows `/t/` and `/api/`.
 
 ## Roadtrips
 

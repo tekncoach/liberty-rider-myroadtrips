@@ -10,6 +10,7 @@
 <meta name="theme-color" content="#c94722" />
 <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" />
+<link rel="stylesheet" href="/static/shared.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
       crossorigin="anonymous" referrerpolicy="no-referrer" />
@@ -208,14 +209,8 @@
   #detailstats { padding: 6px 20px 12px; display: flex; gap: 22px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--border); }
   #pausesToggleLabel { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
   #pausesToggleLabel input { accent-color: var(--accent); }
-  .stat { font-size: 12px; }
-  .stat .v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .stat .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; }
 
   #mapview { flex: 1; min-height: 0; }
-  .mini-chart { flex: 1 1 180px; max-width: 480px; min-width: 120px; align-self: stretch; position: relative; }
-  .mini-chart:empty { display: none; }
-  .mini-chart .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 2px; }
   .mini-chart-grid {
     display: grid; grid-template-rows: 34px auto; row-gap: 2px; column-gap: 2px;
     width: fit-content; max-width: 100%;
@@ -232,13 +227,6 @@
   }
   .mini-chart-label-cell { grid-row: 2; font-size: 9px; color: var(--muted); white-space: nowrap; }
   .mini-chart-label-cell.end { justify-self: end; }
-  .mini-chart-tooltip {
-    position: absolute; transform: translate(-50%, -100%); margin-top: -6px;
-    background: var(--text); color: var(--bg); font-size: 10px; padding: 2px 6px;
-    border-radius: 4px; white-space: nowrap; pointer-events: none; opacity: 0;
-    transition: opacity .1s ease; z-index: 10;
-  }
-  .mini-chart-tooltip.visible { opacity: 1; }
   #daylistHeader {
     display: flex; align-items: center; justify-content: space-between;
     padding: 6px 20px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
@@ -358,34 +346,13 @@
     flex: none; max-width: none;
   }
   #rideModalTimeline:empty { padding: 0; }
-  .ride-timeline-legend { display: flex; gap: 12px; font-size: 10px; color: var(--muted); margin-bottom: 5px; }
-  .ride-timeline-legend .swatch {
-    display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle;
-  }
-  .ride-timeline-legend .swatch.ride { background: var(--accent); }
-  .ride-timeline-legend .swatch.pause { background: var(--pause); }
-  .ride-timeline-track { display: flex; height: 18px; border-radius: 4px; overflow: hidden; gap: 1px; background: var(--bg); }
-  .ride-timeline-seg { height: 100%; min-width: 3px; flex-shrink: 0; cursor: pointer; opacity: 0.85; transition: opacity .12s ease; }
-  .ride-timeline-seg:hover { opacity: 1; }
-  .ride-timeline-seg.ride { background: var(--accent); }
-  .ride-timeline-seg.pause { background: var(--pause); }
-  .ride-timeline-labels { display: flex; justify-content: space-between; margin-top: 3px; font-size: 9px; color: var(--muted); }
   #rideModalElevation {
     padding: 12px 18px 0;
     flex: none; max-width: none; position: relative;
   }
   #rideModalElevation:empty { padding: 0; }
-  .elevation-chart { width: 100%; height: 70px; display: block; overflow: visible; }
-  .elevation-fill { fill: var(--accent); opacity: 0.12; }
-  .elevation-line { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-  .elevation-hit { fill: transparent; cursor: crosshair; }
-  .elevation-pause-dot { fill: var(--pause); stroke: var(--panel); stroke-width: 1; cursor: pointer; }
-  .elevation-col-marker { fill: var(--text); opacity: 0.75; cursor: pointer; transition: opacity .12s ease; }
-  .elevation-col-marker:hover { opacity: 1; }
-  .cols-loading { display: inline-block; animation: cols-loading-pulse 1.1s ease-in-out infinite; }
-  @keyframes cols-loading-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
+  /* Uses cols-loading-pulse, defined in static/shared.css. */
   .loading-section { animation: cols-loading-pulse 1.1s ease-in-out infinite; }
-  .elevation-labels { display: flex; justify-content: space-between; margin-top: 3px; font-size: 9px; color: var(--muted); }
   #rideModalMap { flex: 1; min-height: 200px; }
   .ride-map-reset-btn {
     width: 30px; height: 30px; font-size: 15px; line-height: 1; cursor: pointer;
@@ -406,6 +373,34 @@
   .tag-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600;
     padding: 3px 5px 3px 9px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
   .tag-chip button { border: none; background: none; padding: 0 3px; font-size: 12px; line-height: 1; color: inherit; cursor: pointer; }
+  /* Same dropdown pattern as #userMenu, opening downward from the modal
+     header. Sharing lives in here rather than on the header itself: it is
+     a deliberate act, not something to keep offering on every ride. */
+  #rideModalMenuWrap { position: relative; }
+  #rideModalMenuBtn { font-size: 15px; line-height: 1; padding: 4px 10px; }
+  #rideModalMenu {
+    display: none; position: absolute; top: 100%; right: 0; margin-top: 6px; z-index: 20;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow);
+    min-width: 210px; overflow: hidden;
+  }
+  #rideModalMenu.open { display: block; }
+  #rideModalMenu a { display: block; text-decoration: none; }
+  #rideModalMenu button {
+    display: block; width: 100%; text-align: left; border: none; border-radius: 0; background: none;
+    padding: 9px 12px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  #rideModalMenu button:last-child, #rideModalMenu a:last-child button { border-bottom: none; }
+  #rideModalMenu button:hover { background: var(--row-hover); }
+  #rideModalShare { padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--bg); font-size: 12.5px; }
+  #rideModalShare .share-hint { color: var(--muted); font-size: 11.5px; margin-top: 6px; line-height: 1.45; }
+  #rideModalShare .share-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  #rideModalShare input {
+    flex: 1; min-width: 200px; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  #rideModalShare .share-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  #rideModalShare .danger { color: #d1453b; }
+  .ride-shared-badge { color: var(--accent); font-size: 11px; margin-left: 4px; }
   #rideModalTagInput { padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; width: 130px; }
 
   ::-webkit-scrollbar { width: 9px; }
@@ -507,7 +502,14 @@
   <div id="rideModal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="rideModalTitle">
     <div id="rideModalHead">
       <h2 id="rideModalTitle"></h2>
-      <a id="rideModalGpx" href="#"><button>📄 Télécharger en GPX</button></a>
+      <div id="rideModalMenuWrap">
+        <button id="rideModalMenuBtn" title="Plus d'options" aria-label="Plus d'options"
+                aria-haspopup="menu" aria-expanded="false">⋯</button>
+        <div id="rideModalMenu" role="menu">
+          <a id="rideModalGpx" href="#"><button>📄 Télécharger en GPX</button></a>
+          <button id="rideModalShareBtn">🔗 Lien public</button>
+        </div>
+      </div>
       <button id="rideModalClose">Fermer</button>
     </div>
     <div id="rideModalSubtitle"></div>
@@ -531,6 +533,7 @@
       <input id="rideModalTagInput" placeholder="+ Tag…" aria-label="Ajouter un tag à ce trajet" />
     </div>
     <div id="rideModalMerge"></div>
+    <div id="rideModalShare" hidden></div>
     <div id="rideModalMap"></div>
   </div>
 </div>
@@ -565,6 +568,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="/static/shared.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

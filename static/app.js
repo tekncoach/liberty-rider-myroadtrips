@@ -1,5 +1,4 @@
 const COLORS = ["#e0552b", "#2b7de0", "#2ba85a", "#a02be0", "#e0b02b", "#2bd0d0", "#e02b6a", "#7a8a2b"];
-const MONTHS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
 
 const VALID_TABS = ["ungrouped", "trips", "tags"];
 const savedTab = localStorage.getItem("activeTab");
@@ -24,6 +23,8 @@ const state = {
   map: null,
   rideModalMap: null,
   rideModalId: null,
+  // The open ride's live public link ({token, url, created_at}) or null.
+  rideShare: null,
   // Inverted from the old "showAll" (unchecked = only ungrouped/untagged):
   // now that "Mes traces" has search, an old already-organized ride must
   // still turn up by default — checking this narrows down to the "still
@@ -48,64 +49,6 @@ async function api(path, opts) {
     throw new Error(`${resp.status}: ${text}`);
   }
   return resp.status === 204 ? null : resp.json();
-}
-
-function fmtKm(m) {
-  return ((m || 0) / 1000).toFixed(1) + " km";
-}
-function fmtDuration(s) {
-  s = s || 0;
-  const h = Math.floor(s / 3600);
-  const m = Math.round((s % 3600) / 60);
-  return h > 0 ? `${h}h${String(m).padStart(2, "0")}` : `${m}min`;
-}
-function fmtDate(d) {
-  return new Date(d).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-function fmtDay(d) {
-  return new Date(d).toLocaleDateString("fr-FR", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
-}
-function fmtTime(d) {
-  return new Date(d).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-}
-function fmtAlt(m) {
-  return m == null ? "–" : Math.round(m) + " m";
-}
-function fmtAvgSpeed(distanceM, movingS) {
-  if (!movingS) return "–";
-  return Math.round((distanceM / 1000) / (movingS / 3600)) + " km/h";
-}
-function escapeHtml(s) {
-  return (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
-// --- polyline decoding ---
-// The API sends raw Google-encoded polyline strings (precision 5) instead of
-// decoded [lat,lon] arrays — ~6x smaller over the wire, and the decode runs
-// here on the client instead of on the CPU-throttled server. Standard
-// algorithm, matching Python's `polyline` library.
-function decodePolyline(str) {
-  let index = 0, lat = 0, lng = 0;
-  const coords = [];
-  while (index < str.length) {
-    let shift = 0, result = 0, byte;
-    do { byte = str.charCodeAt(index++) - 63; result += (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
-    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
-    shift = 0; result = 0;
-    do { byte = str.charCodeAt(index++) - 63; result += (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
-    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
-    coords.push([lat / 1e5, lng / 1e5]);
-  }
-  return coords;
-}
-// A ride's polyline arrives as a LIST of encoded strings (one per merge
-// member) — decode each and concatenate into one flat [lat,lon] array.
-function decodePolylines(encodedList) {
-  const points = [];
-  for (const enc of encodedList || []) {
-    if (enc) for (const p of decodePolyline(enc)) points.push(p);
-  }
-  return points;
 }
 
 // --- auth ---
@@ -632,7 +575,7 @@ function renderUngroupedRow(r) {
     <input type="checkbox" ${state.selected.has(r.id) ? "checked" : ""} />
     ${r.preview_picture_url ? `<img class="ride-thumb" loading="lazy" src="${escapeHtml(r.preview_picture_url)}" alt="" />` : ""}
     <div class="ride-body">
-      <div class="name">${escapeHtml(r.name || fmtDate(r.start_time))}</div>
+      <div class="name">${escapeHtml(r.name || fmtDate(r.start_time))}${r.shared ? `<span class="ride-shared-badge" title="Ce trajet a un lien public actif">🔗</span>` : ""}</div>
       <div class="meta">${fmtDate(r.start_time)} → ${fmtTime(new Date(new Date(r.start_time).getTime() + (r.duration || 0) * 1000))} · ${fmtKm(r.distance)} · ${fmtDuration(r.duration)}</div>
       ${tags.length ? `<div class="row-tags">${tagChips}${extraTags}</div>` : ""}
       <div class="badges">${badges.join("")}</div>
@@ -726,6 +669,8 @@ rideModalBackdrop.addEventListener("click", (e) => {
 function closeRideModal() {
   rideModalBackdrop.classList.remove("visible");
   releaseDialog(document.getElementById("rideModal"));
+  document.getElementById("rideModalShare").hidden = true;
+  setRideModalMenu(false);
   if (state.rideModalMap) {
     state.rideModalMap.remove();
     state.rideModalMap = null;
@@ -756,10 +701,16 @@ async function openRideModal(id) {
   `;
   document.getElementById("rideModalGpx").href = `/api/rides/${ride.id}/export.gpx`;
   setupRideModalDetailsToggle();
-  renderRideTimeline(ride);
+  renderRideTimeline(ride, document.getElementById("rideModalTimeline"));
   renderElevationChart(ride.id);
   renderRideModalTags(ride.tags || []);
   renderRideModalMerge(ride);
+  // Collapsed on open — sharing is deliberate, so it takes a click to even
+  // see the controls. `state.rideShare` is null until this ride has a live
+  // public link (see the `share` field on /api/rides/{id}).
+  state.rideShare = ride.share || null;
+  document.getElementById("rideModalShare").hidden = true;
+  setRideModalMenu(false);
   const notesEl = document.getElementById("rideModalNotesText");
   notesEl.textContent = ride.notes || "";
   rideModalBackdrop.classList.add("visible");
@@ -864,6 +815,104 @@ async function onTagsChanged(rideId, tags) {
   if (ride) ride.tags = tags;
   state.tags = await api("/api/tags");
   if (state.tab === "ungrouped" || state.tab === "tags") renderList();
+}
+
+// --- public share link ---
+// Opt-in, one ride at a time: nothing here runs until the user asks for it,
+// and the two destructive actions (cutting a link, replacing it) both spell
+// out that people already holding the URL lose access. See
+// docs/PLAN-public-share.md.
+
+const rideModalShare = document.getElementById("rideModalShare");
+const rideModalMenu = document.getElementById("rideModalMenu");
+
+document.getElementById("rideModalMenuBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  setRideModalMenu(rideModalMenu.classList.toggle("open"));
+});
+// Same dismissal as #userMenu: any click outside closes it.
+document.addEventListener("click", (e) => {
+  if (!rideModalMenu.contains(e.target)) setRideModalMenu(false);
+});
+
+function setRideModalMenu(open) {
+  rideModalMenu.classList.toggle("open", open);
+  document.getElementById("rideModalMenuBtn").setAttribute("aria-expanded", String(open));
+}
+
+document.getElementById("rideModalShareBtn").addEventListener("click", () => {
+  setRideModalMenu(false);
+  rideModalShare.hidden = !rideModalShare.hidden;
+  if (!rideModalShare.hidden) renderRideModalShare();
+});
+
+function renderRideModalShare() {
+  const share = state.rideShare;
+  if (!share) {
+    rideModalShare.innerHTML = `
+      <div>Ce trajet est privé.</div>
+      <div class="share-actions"><button id="shareCreateBtn">Créer un lien public</button></div>
+      <div class="share-hint">Toute personne ayant le lien pourra voir la trace et les statistiques de ce trajet, sans compte. Départ et arrivée restent approximatifs.</div>
+    `;
+    document.getElementById("shareCreateBtn").addEventListener("click", () => setShare({ regenerate: false }));
+    return;
+  }
+  rideModalShare.innerHTML = `
+    <div class="share-row">
+      <input id="shareUrl" readonly aria-label="Lien public de ce trajet" value="${escapeHtml(share.url)}" />
+      <button id="shareCopyBtn">Copier</button>
+    </div>
+    <div class="share-actions">
+      <button id="shareRevokeBtn" class="danger">Désactiver le lien</button>
+      <button id="shareRotateBtn">Régénérer</button>
+    </div>
+    <div class="share-hint">Lien public actif depuis le ${escapeHtml(fmtDate(share.created_at))}.</div>
+  `;
+  document.getElementById("shareCopyBtn").addEventListener("click", copyShareUrl);
+  document.getElementById("shareRevokeBtn").addEventListener("click", async () => {
+    if (!confirm("Désactiver ce lien ? Les personnes à qui tu l'as envoyé ne pourront plus voir ce trajet.")) return;
+    await api(`/api/rides/${state.rideModalId}/share`, { method: "DELETE" });
+    state.rideShare = null;
+    renderRideModalShare();
+    await refreshSharedFlag(state.rideModalId, false);
+  });
+  document.getElementById("shareRotateBtn").addEventListener("click", async () => {
+    if (!confirm("Créer un nouveau lien ? L'ancien cessera immédiatement de fonctionner, y compris pour les personnes à qui tu l'as déjà envoyé.")) return;
+    await setShare({ regenerate: true });
+  });
+}
+
+async function setShare(body) {
+  state.rideShare = await api(`/api/rides/${state.rideModalId}/share`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  renderRideModalShare();
+  await refreshSharedFlag(state.rideModalId, true);
+}
+
+async function copyShareUrl() {
+  const input = document.getElementById("shareUrl");
+  const btn = document.getElementById("shareCopyBtn");
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch (e) {
+    // No clipboard API (or an insecure context): leave the URL selected so
+    // it's one keystroke away rather than failing silently.
+    input.select();
+    return;
+  }
+  btn.textContent = "Copié ✓";
+  setTimeout(() => { btn.textContent = "Copier"; }, 1200);
+}
+
+// Keeps the 🔗 badge in the sidebar list honest without refetching
+// everything — the list already holds this ride.
+async function refreshSharedFlag(rideId, shared) {
+  const ride = state.ungrouped.find((r) => r.id === rideId);
+  if (!ride) return;
+  ride.shared = shared;
+  if (state.tab === "ungrouped") renderList();
 }
 
 function renderRideModalMerge(ride) {
@@ -1241,43 +1290,6 @@ function fillDayGaps(days) {
 const KM_CHART_HEIGHT = 34;
 const KM_BAR_MIN_PX = 8;
 
-// Wires the shared hover tooltip for a mini-chart (km/day, pause fatigue).
-// Bars carry their tooltip text in data-tooltip; this just positions the
-// shared floating label above whichever bar is hovered.
-function attachMiniChartTooltip(container, selector = ".mini-bar") {
-  const tooltip = container.querySelector(".mini-chart-tooltip");
-  container.querySelectorAll(selector).forEach((bar) => {
-    bar.addEventListener("mouseenter", () => {
-      const barRect = bar.getBoundingClientRect();
-      const containerRect = container.getBoundingClientRect();
-      tooltip.textContent = bar.dataset.tooltip;
-      tooltip.style.left = `${barRect.left - containerRect.left + barRect.width / 2}px`;
-      tooltip.style.top = `${barRect.top - containerRect.top}px`;
-      tooltip.classList.add("visible");
-    });
-    bar.addEventListener("mouseleave", () => tooltip.classList.remove("visible"));
-  });
-}
-
-// Shared by pause dots and col markers on the elevation chart: clicking a
-// marker with data-lat/data-lon flies the ride's map to that spot.
-function wireChartMarkerZoom(markers) {
-  markers.forEach((marker) => {
-    marker.addEventListener("click", () => {
-      const map = state.rideModalMap;
-      if (!map || !marker.dataset.lat) return;
-      map.flyTo([Number(marker.dataset.lat), Number(marker.dataset.lon)], 14, { duration: 0.6 });
-    });
-  });
-}
-
-// Single-hue magnitude chart (km/day) — days are a comparison of one
-// measure, not distinct series, so all bars share the accent color; the
-// currently map-focused day (if any) is emphasized, the rest dimmed, same
-// as the day's polyline on the map above. `fillGaps` is true for a roadtrip
-// (a real continuous date span — a rest day should show as an empty slot)
-// and false for a tag (which has no span semantics — filling gaps between
-// e.g. a 2022 and a 2026 ride would mean thousands of meaningless bars).
 function renderKmChart(trip, fillGaps) {
   const el = document.getElementById("kmChart");
   if (!trip.days.length) {
@@ -1319,51 +1331,13 @@ function renderKmChart(trip, fillGaps) {
   attachMiniChartTooltip(el);
 }
 
-// Fatigue proxy: riding vs. paused, alternating, each segment's width
-// proportional to its real duration (not indexed by pause number, so a long
-// pause followed by a short ride leg is directly visible as shapes, not
-// just two adjacent bar heights). Segments are precomputed server-side
-// (see _merged_ride_timeline in app.py) — merged (tracking-split) rides
-// need each member ride's own pause/resume events resolved independently
-// before concatenating, which needs each member's own start/duration that
-// only the backend has; ride.timeline is already the final [{type, start,
-// end}, ...] list, this just renders it.
-function renderRideTimeline(ride) {
-  const el = document.getElementById("rideModalTimeline");
-  const segments = (ride.timeline || []).map((s) => ({ ...s, start: new Date(s.start), end: new Date(s.end) }));
-  if (!segments.length) {
-    el.innerHTML = "";
-    return;
-  }
-  const totalMs = segments.reduce((sum, s) => sum + (s.end - s.start), 0) || 1;
-  const segHtml = segments.map((s) => {
-    const pct = ((s.end - s.start) / totalMs) * 100;
-    const label = s.type === "ride" ? "Trajet" : "Pause";
-    const tooltipText = `${label} — ${fmtTime(s.start)} → ${fmtTime(s.end)} — ${fmtDuration((s.end - s.start) / 1000)}`;
-    return `<div class="ride-timeline-seg ${s.type}" style="flex-basis:${pct}%" data-tooltip="${tooltipText}"></div>`;
-  }).join("");
-  el.innerHTML = `
-    <div class="l">chronologie du trajet</div>
-    <div class="ride-timeline-legend">
-      <span><span class="swatch ride"></span>Trajet</span>
-      <span><span class="swatch pause"></span>Pause</span>
-    </div>
-    <div class="ride-timeline-track">${segHtml}</div>
-    <div class="ride-timeline-labels">
-      <span>${fmtTime(segments[0].start)}</span>
-      <span>${fmtTime(segments[segments.length - 1].end)}</span>
-    </div>
-    <div class="mini-chart-tooltip"></div>
-  `;
-  attachMiniChartTooltip(el, ".ride-timeline-seg");
-}
-
 // Elevation is estimated (see /api/rides/{id}/elevation — Liberty Rider has
 // no per-point altitude data at all), fetched separately from the rest of
 // the modal since open-elevation can be slow on an uncached track — this
 // must never block or break the modal if it's slow or unavailable, it's a
 // fun/optional detail (e.g. spotting a pause taken at the ride's high
-// point, for a photo).
+// point, for a photo). The drawing itself lives in static/shared.js, since
+// the public share page renders the very same chart.
 async function renderElevationChart(rideId) {
   const el = document.getElementById("rideModalElevation");
   el.innerHTML = "";
@@ -1376,88 +1350,25 @@ async function renderElevationChart(rideId) {
     return; // silent — optional feature, never surface an error for it
   }
   if (state.rideModalId !== rideId) return; // modal moved on to another ride meanwhile
+  setElevationGain(elevGainEl, data);
 
-  if (elevGainEl) {
-    elevGainEl.textContent = data.elevation_gain != null
-      ? `+${Math.round(data.elevation_gain)} / -${Math.round(data.elevation_loss)} m`
-      : "–";
-  }
-
-  const profile = (data.profile || []).filter((p) => p.elevation != null);
-  if (profile.length < 2) return;
-  const pauses = (data.pauses || []).filter((p) => p.elevation != null);
-
-  // A square 0-100 viewBox would distort circles into ellipses once
-  // stretched to a wide, short chart — approximate the real rendered box
-  // (matches #rideModal's width minus padding) so pause/hover dots stay
-  // circular instead of measuring the DOM for a "fun" optional feature.
-  const VIEW_W = 684;
-  const VIEW_H = 70;
-  const maxDistance = profile[profile.length - 1].distance_km || 1;
-  const elevations = profile.map((p) => p.elevation);
-  const minElev = Math.min(...elevations);
-  const maxElev = Math.max(...elevations);
-  const elevRange = maxElev - minElev || 1;
-  const x = (km) => (km / maxDistance) * VIEW_W;
-  const y = (elev) => VIEW_H - ((elev - minElev) / elevRange) * VIEW_H;
-
-  const linePoints = profile.map((p) => `${x(p.distance_km)},${y(p.elevation)}`);
-  const fillPoints = [`${x(profile[0].distance_km)},${VIEW_H}`, ...linePoints, `${x(profile[profile.length - 1].distance_km)},${VIEW_H}`];
-  const hitCircles = profile.map((p) =>
-    `<circle class="elevation-hit" cx="${x(p.distance_km)}" cy="${y(p.elevation)}" r="3"
-       data-tooltip="${p.distance_km.toFixed(1)} km — ${Math.round(p.elevation)} m"></circle>`
-  ).join("");
-  const pauseDots = pauses.map((p) =>
-    `<circle class="elevation-pause-dot" cx="${x(p.distance_km)}" cy="${y(p.elevation)}" r="2.5"
-       data-tooltip="Pause — ${p.distance_km.toFixed(1)} km — ${Math.round(p.elevation)} m"
-       data-lat="${p.lat}" data-lon="${p.lon}"></circle>`
-  ).join("");
-
-  el.innerHTML = `
-    <div class="l">altitude (estimée) <span id="colsLoading" class="cols-loading" title="Recherche des cols…">⋯</span></div>
-    <svg class="elevation-chart" viewBox="0 0 ${VIEW_W} ${VIEW_H}" preserveAspectRatio="none" overflow="visible">
-      <polygon class="elevation-fill" points="${fillPoints.join(" ")}"></polygon>
-      <polyline class="elevation-line" points="${linePoints.join(" ")}"></polyline>
-      ${hitCircles}
-      ${pauseDots}
-    </svg>
-    <div class="elevation-labels">
-      <span>0 km</span>
-      <span>${maxDistance.toFixed(1)} km</span>
-    </div>
-    <div class="mini-chart-tooltip"></div>
-  `;
-  attachMiniChartTooltip(el, ".elevation-hit, .elevation-pause-dot");
-  wireChartMarkerZoom(el.querySelectorAll(".elevation-pause-dot"));
+  const chart = renderElevationProfile(el, data, {
+    getMap: () => state.rideModalMap,
+    label: 'altitude (estimée) <span id="colsLoading" class="cols-loading" title="Recherche des cols…">⋯</span>',
+  });
+  if (!chart) return;
 
   // Cols are fetched separately (see /api/rides/{id}/cols): a network call
   // per candidate peak against OpenStreetMap's Overpass, which can be slow
   // — the chart above must never wait on this, so it's appended once (if)
   // this resolves, after the chart is already visible. #colsLoading gives
-  // a small visual cue that this lookup is still in flight.
+  // a small visual cue that this lookup is still in flight. The public
+  // share page deliberately has no equivalent: an unauthenticated URL has
+  // no business setting off Overpass lookups, or the db write behind them.
   try {
     const colsData = await api(`/api/rides/${rideId}/cols`);
     if (state.rideModalId !== rideId) return;
-    const cols = (colsData.cols || []).filter((c) => c.elevation != null);
-    if (!cols.length) return;
-    const svg = el.querySelector(".elevation-chart");
-    if (!svg) return;
-    // A col is identified by shape (climbs then descends), not altitude —
-    // see _detect_peaks in app.py — and named via OpenStreetMap; only
-    // named ones are marked here, an unnamed peak would just be noise.
-    const colMarkers = cols.map((c) => {
-      const cx = x(c.distance_km);
-      const cy = y(c.elevation);
-      // c.name is an OpenStreetMap `name` tag — anyone can edit it, and it
-      // is persisted in ride_cols and replayed on every open, so it is
-      // hostile data going into an HTML attribute.
-      return `<polygon class="elevation-col-marker" points="${cx},${cy - 9} ${cx - 4},${cy - 2} ${cx + 4},${cy - 2}"
-         data-tooltip="${escapeHtml(c.name)} — ${Math.round(c.elevation)} m — ${c.distance_km.toFixed(1)} km"
-         data-lat="${c.lat}" data-lon="${c.lon}"></polygon>`;
-    }).join("");
-    svg.insertAdjacentHTML("beforeend", colMarkers);
-    attachMiniChartTooltip(el, ".elevation-col-marker");
-    wireChartMarkerZoom(el.querySelectorAll(".elevation-col-marker"));
+    appendColMarkers(el, chart, colsData.cols, () => state.rideModalMap);
   } catch (e) {
     // silent — fun/optional detail
   } finally {
