@@ -143,7 +143,10 @@ class LibertyRiderClient:
         if "errors" in data:
             # Partial failure (e.g. a transient 502 re-deriving one field on one
             # ride) — the rest of the page is still usable, so just warn.
-            logger.warning("partial GraphQL errors: %s", data["errors"])
+            # Third-party payload going into a log line: flattened so a
+            # newline in an error message can't forge journal entries.
+            flattened = str(data["errors"]).replace("\r", "").replace("\n", " ")
+            logger.warning("partial GraphQL errors: %s", flattened[:500])
         return data["data"]["currentUser"]
 
     def get_current_user(self) -> dict:

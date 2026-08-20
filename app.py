@@ -167,7 +167,12 @@ _LOG_UNSAFE = re.compile(r"[^A-Za-z0-9@._+-]")
 
 
 def _log_safe(value: str, limit: int = 120) -> str:
-    return _LOG_UNSAFE.sub("_", str(value))[:limit]
+    # The explicit newline strip is redundant with the allowlist below — it
+    # is there because it is the form CodeQL recognises as a log-injection
+    # sanitizer, and an alert that stays open on a line that is in fact safe
+    # trains everyone to ignore alerts.
+    flattened = str(value).replace("\r", "").replace("\n", "")
+    return _LOG_UNSAFE.sub("_", flattened)[:limit]
 
 
 def _is_cross_site(request) -> bool:
@@ -940,7 +945,7 @@ def api_logout(response: Response, session_id: str | None = Cookie(default=None,
             if user and not db.has_active_session(conn, user["id"]):
                 db.clear_refresh_token(conn, user["id"])
             if user:
-                logger.info("logout for user %s", user["id"])
+                logger.info("logout for user %s", _log_safe(user["id"]))
         finally:
             conn.close()
     response.delete_cookie(SESSION_COOKIE)
@@ -956,7 +961,7 @@ def api_logout_everywhere(response: Response, user=Depends(get_session_user)):
     try:
         db.delete_user_sessions(conn, user["id"])
         db.clear_refresh_token(conn, user["id"])
-        logger.info("logout-all for user %s", user["id"])
+        logger.info("logout-all for user %s", _log_safe(user["id"]))
     finally:
         conn.close()
     response.delete_cookie(SESSION_COOKIE)
