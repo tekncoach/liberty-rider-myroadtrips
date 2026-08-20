@@ -19,10 +19,10 @@ import gpxpy.gpx
 import polyline as polyline_lib
 import requests
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.responses import Response as RawResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import db
 import elevation
@@ -61,8 +61,77 @@ async def _lifespan(app: FastAPI):
         db._POOL.close()
 
 
-app = FastAPI(title="Carnet de Route (Liberty Rider sync)", lifespan=_lifespan)
+# The interactive API docs publish the whole endpoint surface (including the
+# maintainer-only ones) to anonymous visitors. Useful locally, pointless in
+# production — set EXPOSE_API_DOCS=1 to opt back in.
+EXPOSE_API_DOCS = os.environ.get("EXPOSE_API_DOCS") == "1" or not COOKIE_SECURE
+
+# Everything this frontend loads: Leaflet from unpkg (pinned + SRI, see
+# static/index.html), OSM/Liberty Rider map tiles as images, and its own
+# API. `style-src 'unsafe-inline'` is still needed because index.html
+# carries its whole stylesheet in a <style> block — moving it to a served
+# .css file is what would let that last exception go.
+CSP = (
+    "default-src 'self'; "
+    "script-src 'self' https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+    "img-src 'self' data: https://*.tile.openstreetmap.org https://tiles.liberty-rider.com; "
+    "connect-src 'self'; "
+    "font-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+SECURITY_HEADERS = {
+    "Content-Security-Policy": CSP,
+    "X-Content-Type-Options": "nosniff",
+    # Belt and braces with the CSP's frame-ancestors, for older browsers.
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "geolocation=(), camera=(), microphone=(), interest-cohort=()",
+}
+
+app = FastAPI(
+    title="Carnet de Route (Liberty Rider sync)",
+    lifespan=_lifespan,
+    docs_url="/docs" if EXPOSE_API_DOCS else None,
+    redoc_url="/redoc" if EXPOSE_API_DOCS else None,
+    openapi_url="/openapi.json" if EXPOSE_API_DOCS else None,
+)
 db.init_db()
+
+
+MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _is_cross_site(request) -> bool:
+    """True when a browser tells us this mutating request came from another
+    origin. `SameSite=lax` already keeps the session cookie off cross-site
+    POSTs, but that's a browser default we inherit rather than a decision we
+    made — this is the explicit half. Requests with no Origin at all (curl,
+    the test client, non-browser callers) are left alone: the header is a
+    browser signal, not an authentication mechanism."""
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    expected = f"{request.url.scheme}://{request.headers.get('host', '')}"
+    return origin != expected
+
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    """Baseline security headers on every response. HSTS and the HTTP→HTTPS
+    redirect come from the reverse proxy, so they're deliberately not set
+    here (setting HSTS on a plain-HTTP dev server would be a footgun)."""
+    if request.method in MUTATING_METHODS and _is_cross_site(request):
+        response = JSONResponse(status_code=403, content={"detail": "Cross-site request rejected"})
+    else:
+        response = await call_next(request)
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
 
 
 # --- auth plumbing -----------------------------------------------------
@@ -169,10 +238,11 @@ def _raw_resumes(conn, ride_id: str) -> list[dict]:
     ]
 
 
-def _merge_members(conn, ride_id: str):
+def _merge_members(conn, ride_id: str, user_id: str):
     """Raw rows absorbed into `ride_id` via a merge (empty if none)."""
     return conn.execute(
-        "SELECT * FROM rides WHERE merged_into = ? ORDER BY start_time", (ride_id,)
+        "SELECT * FROM rides WHERE merged_into = ? AND user_id = ? ORDER BY start_time",
+        (ride_id, user_id),
     ).fetchall()
 
 
@@ -195,7 +265,7 @@ def _merge_group(conn, row, members_map=None) -> list:
     `[row]` if it isn't merged with anything. Pass `members_map` (from
     `_merge_members_map`) when processing many rides in one request to
     avoid a separate query per ride."""
-    members = members_map.get(row["id"], []) if members_map is not None else _merge_members(conn, row["id"])
+    members = members_map.get(row["id"], []) if members_map is not None else _merge_members(conn, row["id"], row["user_id"])
     if not members:
         return [row]
     return sorted([row, *members], key=lambda r: r["start_time"])
@@ -619,33 +689,42 @@ class SyncRequest(BaseModel):
     full: bool = False
 
 
+# Nothing here was bounded before: a 200k-character roadtrip name was
+# accepted and stored verbatim. These caps are generous for real use (a
+# roadtrip name is a few words, a note a few paragraphs) and only exist to
+# stop a client from bloating the database or the rendered page.
+NAME_MAX = 200
+NOTES_MAX = 10_000
+RIDE_IDS_MAX = 1_000
+
+
 class CreateRoadtripRequest(BaseModel):
-    name: str
-    ride_ids: list[str] = []
+    name: str = Field(max_length=NAME_MAX)
+    ride_ids: list[str] = Field(default=[], max_length=RIDE_IDS_MAX)
 
 
 class AttachTagRequest(BaseModel):
-    name: str
+    name: str = Field(max_length=NAME_MAX)
 
 
 class SetNotesRequest(BaseModel):
-    notes: str
+    notes: str = Field(max_length=NOTES_MAX)
 
 
 class RenameTagRequest(BaseModel):
-    name: str
+    name: str = Field(max_length=NAME_MAX)
 
 
 class RenameRoadtripRequest(BaseModel):
-    name: str
+    name: str = Field(max_length=NAME_MAX)
 
 
 class AddRidesRequest(BaseModel):
-    ride_ids: list[str]
+    ride_ids: list[str] = Field(max_length=RIDE_IDS_MAX)
 
 
 class MergeRidesRequest(BaseModel):
-    ride_ids: list[str]
+    ride_ids: list[str] = Field(max_length=RIDE_IDS_MAX)
 
 
 # --- auth ---------------------------------------------------------------
@@ -1019,7 +1098,7 @@ def api_merge_rides(req: MergeRidesRequest, user=Depends(get_session_user)):
         for r in rows:
             if r["merged_into"] is not None:
                 raise HTTPException(status_code=400, detail=f"Ride {r['id']} is already part of a merge")
-            if _merge_members(conn, r["id"]):
+            if _merge_members(conn, r["id"], user["id"]):
                 raise HTTPException(status_code=400, detail=f"Ride {r['id']} already has rides merged into it")
             if _ride_tags(conn, r["id"]):
                 raise HTTPException(status_code=400, detail=f"Ride {r['id']} is tagged — untag it before merging")
@@ -1052,7 +1131,10 @@ def api_unmerge_ride(ride_id: str, user=Depends(get_session_user)):
     conn = db.connect()
     try:
         _get_owned_ride(conn, ride_id, user["id"])
-        conn.execute("UPDATE rides SET merged_into = NULL WHERE merged_into = ?", (ride_id,))
+        conn.execute(
+            "UPDATE rides SET merged_into = NULL WHERE merged_into = ? AND user_id = ?",
+            (ride_id, user["id"]),
+        )
         conn.commit()
         return {"ok": True}
     finally:
@@ -1196,7 +1278,8 @@ def api_roadtrip_detail(trip_id: int, user=Depends(get_session_user)):
     try:
         trip = _get_owned_roadtrip(conn, trip_id, user["id"])
         ride_rows = conn.execute(
-            "SELECT * FROM rides WHERE roadtrip_id = ? ORDER BY start_time", (trip_id,)
+            "SELECT * FROM rides WHERE roadtrip_id = ? AND user_id = ? ORDER BY start_time",
+            (trip_id, user["id"]),
         ).fetchall()
         members_map = _merge_members_map(conn, user["id"])
         rides = [_merged_ride_dict(conn, r, members_map) for r in ride_rows]
@@ -1250,7 +1333,10 @@ def api_delete_roadtrip(trip_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
         _get_owned_roadtrip(conn, trip_id, user["id"])
-        conn.execute("UPDATE rides SET roadtrip_id = NULL WHERE roadtrip_id = ?", (trip_id,))
+        conn.execute(
+            "UPDATE rides SET roadtrip_id = NULL WHERE roadtrip_id = ? AND user_id = ?",
+            (trip_id, user["id"]),
+        )
         conn.execute("DELETE FROM roadtrips WHERE id = ?", (trip_id,))
         conn.commit()
         return {"ok": True}
@@ -1263,6 +1349,10 @@ def api_add_rides(trip_id: int, req: AddRidesRequest, user=Depends(get_session_u
     conn = db.connect()
     try:
         _get_owned_roadtrip(conn, trip_id, user["id"])
+        # An empty list would build `IN ()` — accepted by SQLite, a syntax
+        # error on Postgres (i.e. a 500 in production only).
+        if not req.ride_ids:
+            return {"ok": True}
         placeholders = ",".join("?" * len(req.ride_ids))
         conn.execute(
             f"UPDATE rides SET roadtrip_id = ? WHERE id IN ({placeholders}) AND user_id = ?",
@@ -1280,7 +1370,8 @@ def api_export_gpx(trip_id: int, user=Depends(get_session_user)):
     try:
         trip = _get_owned_roadtrip(conn, trip_id, user["id"])
         ride_rows = conn.execute(
-            "SELECT * FROM rides WHERE roadtrip_id = ? ORDER BY start_time", (trip_id,)
+            "SELECT * FROM rides WHERE roadtrip_id = ? AND user_id = ? ORDER BY start_time",
+            (trip_id, user["id"]),
         ).fetchall()
         return _gpx_response(_build_gpx(conn, ride_rows), trip["name"] or "roadtrip")
     finally:
@@ -1308,11 +1399,11 @@ def _tag_summary(conn, tag_row, ride_rows, members_map=None) -> dict:
     }
 
 
-def _tag_ride_rows(conn, tag_id: int):
+def _tag_ride_rows(conn, tag_id: int, user_id: str):
     return conn.execute(
         "SELECT r.* FROM rides r JOIN ride_tags rt ON rt.ride_id = r.id "
-        "WHERE rt.tag_id = ? ORDER BY r.start_time",
-        (tag_id,),
+        "WHERE rt.tag_id = ? AND r.user_id = ? ORDER BY r.start_time",
+        (tag_id, user_id),
     ).fetchall()
 
 
@@ -1351,7 +1442,7 @@ def api_tag_detail(tag_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
         tag = _get_owned_tag(conn, tag_id, user["id"])
-        ride_rows = _tag_ride_rows(conn, tag_id)
+        ride_rows = _tag_ride_rows(conn, tag_id, user["id"])
         members_map = _merge_members_map(conn, user["id"])
         rides = [_merged_ride_dict(conn, r, members_map) for r in ride_rows]
         polylines, pauses = _polylines_and_pauses(conn, ride_rows, members_map)
@@ -1399,7 +1490,7 @@ def api_export_tag_gpx(tag_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
         tag = _get_owned_tag(conn, tag_id, user["id"])
-        ride_rows = _tag_ride_rows(conn, tag_id)
+        ride_rows = _tag_ride_rows(conn, tag_id, user["id"])
         return _gpx_response(_build_gpx(conn, ride_rows), tag["name"] or "tag")
     finally:
         conn.close()
