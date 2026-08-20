@@ -171,9 +171,18 @@ inside either truncation radius already dropped. Fetched after the page has
 drawn, like the private one, because open-elevation can be slow on a track
 nobody has looked at yet. Same 404 rules and `X-Robots-Tag` as above.
 
-There is deliberately **no public `/cols`**: that endpoint is one Overpass
-call per candidate peak and writes to the database, which no
-unauthenticated URL should be able to set off.
+### `GET /api/public/rides/{token}/cols`
+The named cols already known for this ride — `{ cols: [{name, distance_km,
+elevation, lat, lon}, ...] }`, the same markers the owner sees, with
+`distance_km` rebased onto the truncated track's own axis and any col
+inside a trimmed end dropped.
+
+This endpoint **only reads** `ride_cols`; it never runs the Overpass lookup
+that finds a col, and never writes. Finding a col is the owner's modal's
+job — and since the share link is created from that same modal, a shared
+ride has already been through it. Rows stored before positions were kept
+(name only) are skipped rather than drawn at 0 km; they come back the next
+time that ride's detail is opened. Same 404 rules and `X-Robots-Tag`.
 
 ### `GET /t/{token}`
 The public page itself (`static/share.html`), with this ride's `<title>` and

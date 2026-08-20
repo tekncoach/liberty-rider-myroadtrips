@@ -572,9 +572,17 @@ Le plan a été suivi tel quel, à quatre détails près :
    « hors périmètre v1 ». Le propriétaire a demandé l'inverse : la page
    publique doit reprendre la présentation du modal (chronologie + profil
    d'altitude + les deux blocs de statistiques). Fait, avec un endpoint
-   public dédié calculé sur la trace **tronquée** ; seuls les cols restent
-   dehors (Overpass + écriture en base depuis une URL non authentifiée).
-   Les notes et les tags restent privés, comme prévu.
+   public dédié calculé sur la trace **tronquée**, et les cols nommés via un
+   second endpoint qui se contente de **relire** `ride_cols` — trouver un col
+   coûte un appel Overpass et une écriture, le relire coûte un SELECT, et
+   seul le second a sa place sur une URL non authentifiée. Les notes et les
+   tags restent privés, comme prévu.
+
+   *Erreur d'analyse corrigée en cours de route* : le plan puis la première
+   implémentation confondaient « calculer » et « afficher » un col, et
+   refusaient le second en donnant les raisons du premier. Il a fallu
+   compléter `ride_cols`, qui ne gardait que le nom, avec la position du
+   marqueur (migration `0003`).
 6. **Emplacement du bouton de partage** — d'abord dans l'en-tête du modal,
    déplacé sur demande du propriétaire dans un menu « ⋯ » qui contient aussi
    le GPX : rien n'est visible tant qu'on ne l'ouvre pas.

@@ -200,6 +200,32 @@ function renderElevationProfile(el, data, { getMap, label } = {}) {
 }
 
 
+// Places named cols on an already-drawn profile, using the scale functions
+// renderElevationProfile handed back. Shared: the owner's modal and the
+// public page mark the same passes the same way — only where the list comes
+// from differs (the app computes them, the share page reads what's stored).
+function appendColMarkers(el, chart, cols, getMap) {
+  const drawable = (cols || []).filter((c) => c.elevation != null);
+  if (!drawable.length || !chart || !chart.svg) return;
+  // A col is identified by shape (climbs then descends), not altitude — see
+  // _detect_peaks in app.py — and named via OpenStreetMap; only named ones
+  // are marked, an unnamed peak would just be noise.
+  const markers = drawable.map((c) => {
+    const cx = chart.x(c.distance_km);
+    const cy = chart.y(c.elevation);
+    // c.name is an OpenStreetMap `name` tag — anyone can edit it, and it is
+    // persisted in ride_cols and replayed on every open, so it is hostile
+    // data going into an HTML attribute.
+    return `<polygon class="elevation-col-marker" points="${cx},${cy - 9} ${cx - 4},${cy - 2} ${cx + 4},${cy - 2}"
+       data-tooltip="${escapeHtml(c.name)} — ${Math.round(c.elevation)} m — ${c.distance_km.toFixed(1)} km"
+       data-lat="${c.lat}" data-lon="${c.lon}"></polygon>`;
+  }).join("");
+  chart.svg.insertAdjacentHTML("beforeend", markers);
+  attachMiniChartTooltip(el, ".elevation-col-marker");
+  wireChartMarkerZoom(el.querySelectorAll(".elevation-col-marker"), getMap || (() => null));
+}
+
+
 // The "+556 / -544 m" tile — both sides show the same one.
 function setElevationGain(el, data) {
   if (!el) return;

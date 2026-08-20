@@ -158,8 +158,12 @@ it has to be a decision someone makes, not a side effect.
   `static/shared.css`, rather than being copied into a second implementation
   that would drift. What stays behind is what is private: notes and tags.
   The elevation profile comes from its own public endpoint, computed from
-  the truncated track; cols do not, since Overpass lookups (and the db write
-  behind them) are not something an unauthenticated URL should set off.
+  the truncated track. Named cols come from a second one that **only reads**
+  `ride_cols`: finding a col costs an Overpass call per candidate peak plus
+  a database write, reading one back costs a SELECT, and only the second
+  belongs on an unauthenticated URL. Their stored `distance_km` is measured
+  along the full track, so the public endpoint rebases it onto the truncated
+  axis and drops any col that sat inside a trimmed end.
 - **The page** — `static/share.html` + `static/share.js`, standalone, no
   session, no `state`. Formatting and polyline decoding come from
   `static/shared.js`, which the logged-in app loads too (two plain `<script>`
@@ -206,7 +210,10 @@ it has to be a decision someone makes, not a side effect.
   far, for incremental syncs. It records what the *last sync run* saw, which
   is not the same as what Liberty Rider holds — see **Sync freshness**.
 - **`elevation_cache`** / **`mountain_pass_cache`** / **`ride_cols`** — see
-  **Elevation profile & named cols** below.
+  **Elevation profile & named cols** below. `ride_cols` stores where each
+  col sits (`distance_km`, `elevation`, `lat`, `lon`) alongside its name, so
+  a marker can be redrawn from that table alone — which is what lets a
+  shared ride show its cols without recomputing them.
 
 ### Migrations (Postgres)
 

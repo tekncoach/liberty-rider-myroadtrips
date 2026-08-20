@@ -66,21 +66,36 @@ function fillStats(id, stats) {
 
 // Fetched after the page has already drawn, exactly like the modal does it:
 // open-elevation can be slow on a track nobody has looked at yet, and the
-// map must never wait on it. Unlike the modal, there are no cols — that
-// lookup hits Overpass and writes to the database, which no unauthenticated
-// URL should be able to set off.
+// map must never wait on it.
 async function loadElevation(map) {
+  const el = document.getElementById("elevation");
   let data;
   try {
-    const resp = await fetch(`/api/public/rides/${encodeURIComponent(token)}/elevation`);
-    if (!resp.ok) throw new Error(String(resp.status));
-    data = await resp.json();
+    data = await getPublic("elevation");
   } catch (e) {
     setElevationGain(document.getElementById("elevGain"), {});
     return; // silent — optional detail, never break the page over it
   }
   setElevationGain(document.getElementById("elevGain"), data);
-  renderElevationProfile(document.getElementById("elevation"), data, { getMap: () => map });
+  const chart = renderElevationProfile(el, data, { getMap: () => map });
+  if (!chart) return;
+
+  // The same named cols the owner sees on their own chart. Their endpoint
+  // only reads what is already stored — it never runs the Overpass lookup
+  // that found them, which is the owner's own modal's job (and the modal is
+  // where a share link is created, so a shared ride has been through it).
+  try {
+    const { cols } = await getPublic("cols");
+    appendColMarkers(el, chart, cols, () => map);
+  } catch (e) {
+    // silent — the chart stands on its own without them
+  }
+}
+
+async function getPublic(what) {
+  const resp = await fetch(`/api/public/rides/${encodeURIComponent(token)}/${what}`);
+  if (!resp.ok) throw new Error(String(resp.status));
+  return resp.json();
 }
 
 function renderMap(ride) {

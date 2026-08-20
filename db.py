@@ -162,9 +162,21 @@ CREATE TABLE IF NOT EXISTS mountain_pass_cache (
 -- detail is opened, not backfilled for the whole history at once (an
 -- eager backfill would mean hundreds of Overpass calls against a free,
 -- rate-limited public API).
+--
+-- Where each col sits (distance along the track, altitude, coordinates) is
+-- stored alongside its name so a marker can be redrawn from this table
+-- alone. That is what lets the public share page show the same cols as the
+-- modal without recomputing anything: reading a col costs a SELECT, only
+-- *finding* one costs an Overpass call. Null on rows written before those
+-- columns existed — the next time that ride's detail is opened, its rows
+-- are replaced wholesale and the positions come back.
 CREATE TABLE IF NOT EXISTS ride_cols (
   ride_id TEXT REFERENCES rides(id),
-  name TEXT NOT NULL
+  name TEXT NOT NULL,
+  distance_km REAL,
+  elevation REAL,
+  lat REAL,
+  lon REAL
 );
 CREATE INDEX IF NOT EXISTS idx_ride_cols_ride ON ride_cols(ride_id);
 
@@ -334,6 +346,14 @@ def init_db() -> None:
             conn.execute("ALTER TABLE rides ADD COLUMN user_id TEXT REFERENCES users(id)")
         if "notes" not in rides_cols:
             conn.execute("ALTER TABLE rides ADD COLUMN notes TEXT")
+
+        # Where each col sits, added after the fact (see the ride_cols
+        # comment in SCHEMA): existing rows keep their name and get NULL
+        # positions until that ride's detail is next opened.
+        ride_cols_cols = {row["name"] for row in conn.execute("PRAGMA table_info(ride_cols)")}
+        for column in ("distance_km", "elevation", "lat", "lon"):
+            if column not in ride_cols_cols:
+                conn.execute(f"ALTER TABLE ride_cols ADD COLUMN {column} REAL")
 
         roadtrips_cols = {row["name"] for row in conn.execute("PRAGMA table_info(roadtrips)")}
         if "user_id" not in roadtrips_cols:

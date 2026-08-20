@@ -11,6 +11,7 @@ from conftest import make_event, make_ride
 
 import db as db_module
 import elevation as elevation_module
+import mountain_pass as mountain_pass_module
 
 # Exactly what a visitor with no account is allowed to receive. Written out
 # here rather than imported from app.py on purpose: adding a field to the
@@ -401,14 +402,110 @@ def test_the_elevation_profile_needs_a_live_token_too(client, make_client, login
     assert visitor.get("/api/public/rides/r1/elevation").status_code == 404
 
 
-def test_cols_are_not_offered_publicly(client, make_client, login_as):
-    """That endpoint is one Overpass call per candidate peak AND writes to
-    the database — not something an unauthenticated URL should set off."""
+# --- named cols ---------------------------------------------------------
+
+def _seed_col(ride_id, name, distance_km, elevation=1200.0, lat=48.81, lon=2.30):
+    """A col as api_ride_cols persists it once the owner has opened the ride."""
+    conn = db_module.connect()
+    try:
+        conn.execute(
+            "INSERT INTO ride_cols (ride_id, name, distance_km, elevation, lat, lon) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (ride_id, name, distance_km, elevation, lat, lon),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_a_visitor_sees_the_cols_the_app_already_knows(client, make_client, login_as):
+    login_as(client, "user-1")
+    _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z", detailed_polyline=LONG_TRACK)
+    _seed_col("r1", "Col du Galibier", 2.0)
+    token = _share(client, "r1")["token"]
+
+    cols = make_client().get(f"/api/public/rides/{token}/cols").json()["cols"]
+
+    assert [c["name"] for c in cols] == ["Col du Galibier"]
+    assert cols[0]["elevation"] == 1200.0
+
+
+def test_public_cols_never_compute_anything(client, make_client, login_as, monkeypatch):
+    """Reading a col is a SELECT; *finding* one is an Overpass call per
+    candidate peak plus a database write. Only the first belongs on an
+    unauthenticated URL — so this endpoint must not so much as look up a
+    name, even for a ride whose cols were never worked out."""
+    def _boom(*args, **kwargs):
+        raise AssertionError("the public endpoint must not look up a pass name")
+
+    monkeypatch.setattr(mountain_pass_module, "get_pass_name", _boom)
     login_as(client, "user-1")
     _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z", detailed_polyline=LONG_TRACK)
     token = _share(client, "r1")["token"]
 
-    assert make_client().get(f"/api/public/rides/{token}/cols").status_code == 404
+    resp = make_client().get(f"/api/public/rides/{token}/cols")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"cols": []}
+    conn = db_module.connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) AS n FROM ride_cols").fetchone()["n"] == 0
+    finally:
+        conn.close()
+
+
+def test_public_cols_sit_on_the_truncated_axis(client, make_client, login_as):
+    """A col's stored distance is measured along the full track, and the
+    public chart's axis starts at the trimmed head — an unshifted marker
+    would land a couple of hundred metres off."""
+    login_as(client, "user-1")
+    _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z", detailed_polyline=LONG_TRACK)
+    _seed_col("r1", "Col du Galibier", 2.0)
+    token = _share(client, "r1")["token"]
+
+    private = client.get("/api/rides/r1").json()  # ride exists, cols come from the table
+    public = make_client().get(f"/api/public/rides/{token}/cols").json()["cols"]
+
+    assert private["id"] == "r1"
+    assert 0 < public[0]["distance_km"] < 2.0  # shifted back by the trimmed head
+
+
+def test_a_col_inside_a_trimmed_end_is_dropped(client, make_client, login_as):
+    login_as(client, "user-1")
+    _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z", detailed_polyline=LONG_TRACK)
+    _seed_col("r1", "Col de la Maison", 0.05)  # 50 m in — inside the trimmed head
+
+    token = _share(client, "r1")["token"]
+
+    assert make_client().get(f"/api/public/rides/{token}/cols").json()["cols"] == []
+
+
+def test_cols_written_before_positions_existed_are_skipped(client, make_client, login_as):
+    """Old rows carry a name and nothing else; drawing them at 0 km would
+    put a col on the start line. They come back when that ride is reopened."""
+    login_as(client, "user-1")
+    _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z", detailed_polyline=LONG_TRACK)
+    conn = db_module.connect()
+    try:
+        conn.execute("INSERT INTO ride_cols (ride_id, name) VALUES (?, ?)", ("r1", "Col ancien"))
+        conn.commit()
+    finally:
+        conn.close()
+    token = _share(client, "r1")["token"]
+
+    assert make_client().get(f"/api/public/rides/{token}/cols").json()["cols"] == []
+
+
+def test_public_cols_need_a_live_token_too(client, make_client, login_as):
+    login_as(client, "user-1")
+    _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z", detailed_polyline=LONG_TRACK)
+    _seed_col("r1", "Col du Galibier", 2.0)
+    token = _share(client, "r1")["token"]
+    client.delete("/api/rides/r1/share")
+
+    visitor = make_client()
+    assert visitor.get(f"/api/public/rides/{token}/cols").status_code == 404
+    assert visitor.get("/api/public/rides/r1/cols").status_code == 404
 
 
 # --- ownership ----------------------------------------------------------

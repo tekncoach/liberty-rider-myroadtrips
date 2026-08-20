@@ -1270,11 +1270,16 @@ def api_ride_cols(ride_id: str, user=Depends(get_session_user)):
 
         # Persisted so these names become searchable (see api_list_rides) —
         # progressively, only for rides whose detail has actually been
-        # opened, not backfilled for the whole history at once.
+        # opened, not backfilled for the whole history at once. Position is
+        # stored too, so the same markers can be redrawn from this table
+        # alone — that is what the public share page reads (see
+        # api_public_ride_cols): finding a col costs an Overpass call,
+        # reading one back costs a SELECT.
         conn.execute("DELETE FROM ride_cols WHERE ride_id = ?", (ride_id,))
         conn.executemany(
-            "INSERT INTO ride_cols (ride_id, name) VALUES (?, ?)",
-            [(ride_id, c["name"]) for c in cols],
+            "INSERT INTO ride_cols (ride_id, name, distance_km, elevation, lat, lon) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [(ride_id, c["name"], c["distance_km"], c["elevation"], c["lat"], c["lon"]) for c in cols],
         )
         conn.commit()
 
@@ -1466,6 +1471,27 @@ def _share_view(request: Request, share) -> dict | None:
     }
 
 
+def _truncation_bounds(points: list) -> tuple[int, int]:
+    """The slice of a track that survives truncation, as (head, tail)
+    indices. Split out from `_truncate_track` because the public cols also
+    need it: a col's stored distance is measured along the FULL track, and
+    the public chart's axis starts at the trimmed head."""
+    if not points:
+        return 0, 0
+    start, end = points[0], points[-1]
+    head = 0
+    while head < len(points) and _metres_between(start, points[head]) < SHARE_TRUNCATION_M:
+        head += 1
+    tail = len(points)
+    while tail > head and _metres_between(end, points[tail - 1]) < SHARE_TRUNCATION_M:
+        tail -= 1
+    return head, tail
+
+
+def _metres_between(a, b) -> float:
+    return (haversine_km(a[0], a[1], b[0], b[1]) or 0) * 1000
+
+
 def _truncate_track(points: list, pauses: list) -> tuple[list, list, bool]:
     """Trims the leading and trailing SHARE_TRUNCATION_M of a track, and
     drops any pause inside either radius (a pause logged at home is the
@@ -1479,16 +1505,7 @@ def _truncate_track(points: list, pauses: list) -> tuple[list, list, bool]:
     if not points:
         return points, pauses, False
     start, end = points[0], points[-1]
-
-    def _m_from(ref, p):
-        return (haversine_km(ref[0], ref[1], p[0], p[1]) or 0) * 1000
-
-    head = 0
-    while head < len(points) and _m_from(start, points[head]) < SHARE_TRUNCATION_M:
-        head += 1
-    tail = len(points)
-    while tail > head and _m_from(end, points[tail - 1]) < SHARE_TRUNCATION_M:
-        tail -= 1
+    head, tail = _truncation_bounds(points)
     kept = points[head:tail]
     if not kept:
         # A ride shorter than two truncation radii is all endpoint. Publish
@@ -1497,8 +1514,8 @@ def _truncate_track(points: list, pauses: list) -> tuple[list, list, bool]:
     kept_pauses = [
         p for p in pauses
         if p.get("lat") is not None and p.get("lon") is not None
-        and _m_from(start, (p["lat"], p["lon"])) >= SHARE_TRUNCATION_M
-        and _m_from(end, (p["lat"], p["lon"])) >= SHARE_TRUNCATION_M
+        and _metres_between(start, (p["lat"], p["lon"])) >= SHARE_TRUNCATION_M
+        and _metres_between(end, (p["lat"], p["lon"])) >= SHARE_TRUNCATION_M
     ]
     return kept, kept_pauses, len(kept) != len(points)
 
@@ -1948,6 +1965,61 @@ def api_public_ride_elevation(token: str, response: Response):
         return _elevation_payload(conn, _get_shared_ride(conn, token), truncate=True)
     finally:
         conn.close()
+
+
+@app.get("/api/public/rides/{token}/cols")
+def api_public_ride_cols(token: str, response: Response):
+    """The named cols already known for this ride — the same markers the
+    owner sees on their own chart.
+
+    This endpoint never computes anything: it reads `ride_cols`, which the
+    owner's own modal filled in (opening a ride is how a col gets found, and
+    opening a ride is also how its share link is created, so a shared ride
+    has been through that). Finding a col costs an Overpass call per
+    candidate peak plus a database write; reading one back costs a SELECT,
+    and only the second belongs on an unauthenticated URL.
+
+    Rows written before positions were stored have no coordinates and are
+    skipped rather than drawn at 0 km — they come back the next time that
+    ride's detail is opened."""
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    conn = db.connect()
+    try:
+        return {"cols": _public_cols(conn, _get_shared_ride(conn, token))}
+    finally:
+        conn.close()
+
+
+def _public_cols(conn, row) -> list:
+    """Stored cols, rebased onto the truncated track's own distance axis.
+
+    A col's `distance_km` is measured along the full track; the public
+    chart's axis starts at the trimmed head, so everything shifts by that
+    much — and a col that fell inside either trimmed end is dropped along
+    with the metres it sat on."""
+    cols = [
+        dict(c) for c in conn.execute(
+            "SELECT name, distance_km, elevation, lat, lon FROM ride_cols WHERE ride_id = ? "
+            "ORDER BY distance_km",
+            (row["id"],),
+        ).fetchall()
+        if c["distance_km"] is not None and c["elevation"] is not None
+    ]
+    if not cols:
+        return []
+    points, _ = _merged_polyline_and_pauses(conn, row)
+    head, tail = _truncation_bounds(points)
+    if not points or head >= tail:
+        return []
+    cum = [0.0]
+    for i in range(1, tail):
+        cum.append(cum[-1] + (haversine_km(*points[i - 1], *points[i]) or 0))
+    head_km, tail_km = cum[head], cum[tail - 1]
+    return [
+        {**c, "distance_km": round(c["distance_km"] - head_km, 2)}
+        for c in cols
+        if head_km <= c["distance_km"] <= tail_km
+    ]
 
 
 @app.get("/t/{token}")
