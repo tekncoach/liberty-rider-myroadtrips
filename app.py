@@ -386,7 +386,7 @@ def _merged_polyline_and_pauses(conn, row, members_map=None, pauses_map=None) ->
     for r in group:
         if r["detailed_polyline"]:
             points.extend(polyline_lib.decode(r["detailed_polyline"]))
-    pauses = []
+    pauses: list[dict] = []
     for r in group:
         pauses.extend(pauses_map.get(r["id"], []) if pauses_map is not None else _raw_pauses(conn, r["id"]))
     return points, pauses

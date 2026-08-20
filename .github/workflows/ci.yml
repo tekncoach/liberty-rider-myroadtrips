@@ -33,6 +33,7 @@ jobs:
       # been formatted (20 of 29 files would change). Add this step in the
       # same commit as the one-off `ruff format .`, not before — otherwise
       # CI is red from the first push.
+      - run: mypy .
       - name: Audit dependencies for known vulnerabilities
         run: pip-audit -r requirements.txt
 
@@ -49,7 +50,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - run: pytest -q
+      # The threshold is set just under the current figure: it exists to
+      # catch a drop, not to chase a number.
+      - run: pytest -q --cov=. --cov-fail-under=80
 
   # Production is Postgres; without this job the `?`→`%s` translation layer
   # in db.py is exercised by nothing (this is how APP-06 reached production

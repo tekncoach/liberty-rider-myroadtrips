@@ -32,3 +32,14 @@ ignore = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.11"
+# Third-party stubs aren't installed in CI; the value here is catching our
+# own mistakes, not annotating requests.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[tool.coverage.run]
+omit = ["tests/*", "scripts/*", ".venv/*"]

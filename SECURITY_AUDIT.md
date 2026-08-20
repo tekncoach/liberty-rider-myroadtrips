@@ -4,7 +4,7 @@
 |---|---|
 | **Audit initial** | 2026-08-20, 30 findings (`secaudit`, lecture seule) |
 | **Réconcilié le** | 2026-08-20, contre `main` = `9d776bc` (poussé **et déployé**) |
-| **Synthèse** | **21 findings résolus** (+ 2 sans objet dès l'origine) — **9 restent à traiter : 7 partiels, 2 ouverts** |
+| **Synthèse** | **24 findings résolus** (+ 3 sans objet) — **5 restent à traiter : 4 partiels, 1 ouvert** |
 | **Total** | 30 findings d'origine + 2 découverts depuis (**CICD-02** la CI rouge, **GH-03** l'alerte CodeQL) = 32 |
 | **Détail des correctifs** | `docs/SECURITY-REMEDIATION.md` (sur `main`) — ce fichier ne garde que ce qui reste |
 | **Version d'audit complète** | l'original 30-findings reste dans l'historique de ce fichier de travail |
@@ -53,24 +53,21 @@ vérifiées une par une, y compris en exécution réelle.
 | **CSP / SRI** | Aucun script ni handler inline ; Leaflet chargé avec les mêmes hashes SRI que l'app — pas de régression de SC-01 |
 | **Appels externes** | `/cols` public ne fait qu'un `SELECT` : trouver un col coûte un appel Overpass **et une écriture**, ce qui n'a rien à faire sur une URL non authentifiée. `/elevation` public déclenche des lookups, mais bornés (~60 points, cachés définitivement par coordonnée) — cf. APP-05 |
 
-## Findings ouverts — infrastructure live (2)
+## Findings ouverts — infrastructure live (1)
 
 | ID | Sév. | Ce qui reste | Remédiation | GO requis |
 |---|---|---|---|---|
 | **VM-02** | **High** | ✅ timer systemd `pg_dump` quotidien actif, rétention 7 j, dump testé · ❌ **pas de copie hors VM, pas de chiffrement du dump** — une perte de VM emporte encore les sauvegardes avec elle | Copier les dumps hors de la VM (S3/B2/rsync) et les chiffrer (age/gpg), puis **tester une restauration**. Le chiffrement du dump devient d'autant plus utile que les jetons qu'il contient sont désormais chiffrés en base | **Oui** (ops) |
-| **VM-05** | Low | ✅ `unattended-upgrades` démasqué et actif · ❌ drop-in SSH non appliqué (`PasswordAuthentication no`, `PermitRootLogin prohibit-password`) · ❌ pas de `fail2ban` | Risque résiduel faible : les mots de passe de `root` et `exedev` sont verrouillés, le bruteforce par mot de passe est déjà inopérant. À poser pour la forme | **Oui** (ops) |
 
-## Findings partiels — la moitié restante (7)
+## Findings partiels — la moitié restante (4)
 
 Une partie est corrigée sur `main` ; ce tableau ne décrit que **ce qui reste**.
 
 | ID | Sév. | Ce qui reste précisément | Remédiation | GO requis |
 |---|---|---|---|---|
-| **GH-01** | Medium | ✅ **branche `main` protégée** (force-push et suppression refusés), Dependabot security updates ON, private vulnerability reporting ON, CodeQL actif · ❌ `validity_checks` et `non_provider_patterns` : **non activables par API dépôt**, ils dépendent des réglages du compte (Settings → Code security) · ❌ commits non signés (choix assumé) · *ancien état :* ✅ poussés et actifs : **CodeQL tourne et passe**, Dependabot ouvre des PR (3 en cours), secret scanning + push protection ON · ❌ Dependabot **security** updates, validity checks et non-provider patterns toujours `disabled` · ❌ **aucune protection sur `main`** · ❌ aucun commit signé | Activer le reste (commandes `gh` prêtes dans `docs/SECURITY-REMEDIATION.md` § b). Protéger `main` **une fois la CI verte**, sinon la règle « CI verte obligatoire » bloque tout (cf. CICD-02) | **Oui** (réglages GitHub) |
-| **APP-05** | Medium | ✅ lookups Overpass plafonnés (`MAX_PEAK_LOOKUPS = 12`) · ❌ aucun rate limiting par utilisateur sur `/cols`, `/elevation`, `/sync`, `/sync/status` · ❌ `/cols` reste **un GET qui écrit** (`DELETE`+`INSERT` sur `ride_cols`) · 🆕 **`/api/public/rides/{token}/elevation` est non authentifié** et peut déclencher des lookups open-elevation au premier affichage — bornés et cachés, mais c'est la première route publique concernée | Compteur par utilisateur sur ces quatre routes ; passer `/cols` en POST (ou sortir l'écriture du GET) — changement d'API à coordonner avec le frontend | Non |
+| **GH-01** | Medium | ✅ `validity_checks` / `non_provider_patterns` : **non disponibles** sur un dépôt public perso (GitHub Advanced Security payant) — vérifié dans l'UI, il n'y a pas de case à cocher · ✅ **branche `main` protégée** (force-push et suppression refusés), Dependabot security updates ON, private vulnerability reporting ON, CodeQL actif · ❌ `validity_checks` et `non_provider_patterns` : **non activables par API dépôt**, ils dépendent des réglages du compte (Settings → Code security) · ❌ commits non signés (choix assumé) · *ancien état :* ✅ poussés et actifs : **CodeQL tourne et passe**, Dependabot ouvre des PR (3 en cours), secret scanning + push protection ON · ❌ Dependabot **security** updates, validity checks et non-provider patterns toujours `disabled` · ❌ **aucune protection sur `main`** · ❌ aucun commit signé | Activer le reste (commandes `gh` prêtes dans `docs/SECURITY-REMEDIATION.md` § b). Protéger `main` **une fois la CI verte**, sinon la règle « CI verte obligatoire » bloque tout (cf. CICD-02) | **Oui** (réglages GitHub) |
 | **CICD-01** | Medium | ✅ `permissions`, `concurrency`, actions épinglées par SHA, matrice 3.11/3.12/3.13, `ruff check`, `pip-audit`, job `postgres:16` · ❌ pas de `mypy`, pas de couverture ni de seuil · ❌ `ruff format --check` volontairement absent | `ruff format .` en **un commit isolé** une fois `feat/public-share` atterrie, en réactivant dans le même commit l'étape CI **et** la ligne commentée du hook. Puis `mypy` et `pytest-cov` | Non |
 | **APP-04** | Medium | ✅ CSP + `nosniff` + `X-Frame-Options` + `Referrer-Policy` + `Permissions-Policy` sur toutes les réponses · ❌ `style-src` garde `'unsafe-inline'` (la feuille de style vit dans un `<style>` de `index.html`) · ❌ en-tête `server: uvicorn` toujours divulgué | Déplacer le `<style>` vers un `.css` servi, puis retirer `'unsafe-inline'`. `--header server:` est déjà dans `deploy/roadtrips.service` | Non |
-| **SC-01** | Medium | ✅ Leaflet épinglé avec SRI + `crossorigin` (hashes revérifiés contre les fichiers réellement servis) · ❌ la dépendance réseau à `unpkg.com` demeure, et c'est elle qui empêche un `script-src 'self'` strict | Vendorer `leaflet.js`/`leaflet.css` (+ les images du CSS) dans `static/vendor/` — ~160 Ko, cohérent avec le « no build step » | Non |
 | **APP-10** | Low | ✅ `logging` configuré, dernier `print()` retiré, login/logout journalisés · ❌ pas de journal structuré · ❌ aucune trace d'audit sur la purge de compte ni sur les accès au dashboard admin | Logger JSON, et journaliser `DELETE /api/account/data` et `/api/admin/stats` | Non |
 | **SC-02** | Info | ✅ dépendances de dev épinglées, `pip-audit` en CI, 0 vulnérabilité connue sur les 6 directes · ❌ transitives non verrouillées (pas de lock, pas de hashes) | `uv lock` / `pip-compile --generate-hashes` | Non |
 
@@ -84,6 +81,9 @@ Vérifiés un par un dans le code de `main` = `fbb219a` (114 tests verts,
 
 | ID | Sév. | En un mot |
 |---|---|---|
+| **SC-01** | Medium | Leaflet **vendoré** dans `static/vendor/` (SHA-384 vérifiés identiques aux SRI épinglés contre unpkg) — plus aucune dépendance CDN, `script-src 'self'` sans exception. Rendu vérifié en navigateur headless : 0 violation CSP |
+| **APP-05** | Medium | Rate limiting sur `/cols`, `/elevation`, `/sync`, `/sync/status` (par compte) et sur l'endpoint public d'altitude (par IP) ; lookups Overpass déjà plafonnés |
+| **VM-05** | Low | *Sans objet* : le `sshd` de la VM est celui d'exe.dev (`-f /exe.dev/etc/ssh/sshd_config`), pas un `sshd` système. Sa config a **déjà** `PasswordAuthentication no`, `PermitRootLogin prohibit-password`, `PermitEmptyPasswords no` et des algos modernes. `unattended-upgrades` est actif |
 | **A11Y-01** | Info | Modales utilisables au clavier (rôles, focus), boutons icônes nommés, carte de partage + favicon + `robots.txt`, badges README, `CHANGELOG.md` — livré par l'agent `vitrine`, vérifié compatible CSP avant merge |
 | **GH-03** | Medium | Alerte CodeQL #1 (`py/log-injection`) : un saut de ligne dans un email pouvait forger des entrées de journal. Valeurs assainies avant journalisation |
 | **CICD-02** | Medium | Isolation des tests sous Postgres (`TRUNCATE` entre tests), helpers rendus portables (`RETURNING id`, catalogue de tables, erreurs d'intégrité) — **122 tests verts sur les deux backends**, ce qui ferme réellement APP-06 |
