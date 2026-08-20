@@ -22,6 +22,53 @@ PAGE_SIZE = 50
 LAST_SYNC_KEY = "last_sync_max_start_time"
 
 
+def pending_status(client, user_id: str) -> dict:
+    """Is there anything left to import from Liberty Rider for this account?
+
+    Answering that needs Liberty Rider itself: the local cursor
+    (`last_sync_max_start_time`) only ever says "nothing new *as of the last
+    sync I ran*", which is not the same claim. So this asks the API for its
+    single newest ride (one tiny query — id + startTime only) and compares
+    that startTime to the newest ride we have on file. Both sides are
+    ISO-8601 UTC strings straight from the same API, so they compare
+    lexicographically, exactly like `sync()` compares them while paging.
+    """
+    conn = db.connect()
+    try:
+        cursor = db.get_sync_state(conn, user_id, LAST_SYNC_KEY)
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MAX(start_time) AS newest FROM rides WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        local_rides, local_newest = row["n"], row["newest"]
+    finally:
+        conn.close()
+
+    # `start_time` is stored verbatim from the API, so the newest ride on
+    # file is directly comparable — and it keeps the answer right even when
+    # the cursor is missing (data claimed by `claim_orphaned_data`, a
+    # half-finished first sync…), where the cursor alone would say "never
+    # synced" and cry wolf forever.
+    local_latest = max((x for x in (cursor, local_newest) if x), default=None)
+
+    latest = client.get_latest_ride()
+    remote_latest = latest["startTime"] if latest else None
+
+    if remote_latest is None:
+        pending = False  # nothing on the remote side at all
+    elif local_latest is None:
+        pending = True  # never synced, and there is something to fetch
+    else:
+        pending = remote_latest > local_latest
+
+    return {
+        "pending": pending,
+        "remote_latest_start_time": remote_latest,
+        "last_sync_start_time": local_latest,
+        "local_rides": local_rides,
+    }
+
+
 def sync(client, user_id: str, full: bool = False, page_size: int = PAGE_SIZE) -> dict:
     """`client` is an already-authenticated LibertyRiderClient (app.py
     resolves/refreshes the token before calling this); `user_id` scopes

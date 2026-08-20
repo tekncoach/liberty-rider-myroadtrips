@@ -797,6 +797,31 @@ def api_sync(req: SyncRequest, user=Depends(get_session_user)):
     return summary
 
 
+@app.get("/api/sync/status")
+def api_sync_status(user=Depends(get_session_user)):
+    """Whether Liberty Rider has rides this account hasn't imported yet.
+
+    Deliberately asks Liberty Rider (one tiny query for the newest ride's
+    startTime) instead of answering from local state alone: locally we can
+    only ever tell that nothing changed since the last sync *we* ran, which
+    is exactly what made the UI claim "à jour" while new rides were waiting.
+    """
+    conn = db.connect()
+    try:
+        client = _live_client_for(conn, user)
+    finally:
+        conn.close()
+    try:
+        return sync_module.pending_status(client, user["id"])
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status in (401, 403):
+            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.")
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 # --- rides ------------------------------------------------------------
 
 @app.get("/api/rides")

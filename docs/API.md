@@ -33,7 +33,9 @@ Live-fetches `first_name` and `manual_ride_count` from Liberty Rider itself
 `docs/ARCHITECTURE.md`). Note: `manual_ride_count` (Liberty Rider's own
 `currentUser.manualRideCount` field) doesn't necessarily match this app's
 own `total_rides` from `/api/sync` — its exact definition on Liberty Rider's
-side isn't confirmed, only its name.
+side isn't confirmed, only its name. **It is not a sync-progress signal**:
+comparing it to the local ride count is what used to make the UI claim
+"à jour" with rides still waiting — use `GET /api/sync/status` for that.
 
 ## Sync
 
@@ -48,6 +50,19 @@ since the last sync (see `docs/ARCHITECTURE.md` for the pagination
 semantics). Returns `{ "fetched": int, "upserted": int, "total_rides": int }`.
 **401** if the stored token is invalid and couldn't be refreshed (log in
 again); **502** on any other Liberty Rider API error.
+
+### `GET /api/sync/status`
+Whether Liberty Rider holds rides this account hasn't imported yet. Asks the
+API for its single newest ride (`id` + `startTime` only — one small query,
+no polylines) and compares that `startTime` to what we already have. Returns
+`{ "pending": bool, "remote_latest_start_time": str|null,
+"last_sync_start_time": str|null, "local_rides": int }`, where
+`last_sync_start_time` is the newest ride on file locally (the `sync_state`
+cursor, or the newest `rides.start_time` if the cursor is missing). Same
+error codes as `POST /api/sync` (**401** on an unrecoverable token, **502**
+on any other Liberty Rider error) — the frontend treats an error as "status
+unknown" and falls back to a plain local count rather than claiming either
+way. Called on app open and after each sync; never polled.
 
 ## Rides
 

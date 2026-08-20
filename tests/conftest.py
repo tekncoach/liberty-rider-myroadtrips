@@ -52,10 +52,15 @@ def client(make_client):
 class FakeLRClient:
     """Stand-in for LibertyRiderClient. `current_user` is swapped per-login
     by the `login_as` fixture; `stopped_rides_pages` can be set by a test
-    before calling /api/sync to control what get_stopped_rides returns."""
+    before calling /api/sync to control what get_stopped_rides returns, and
+    `latest_ride` likewise for /api/sync/status."""
 
     current_user = {"id": "user-1", "firstName": "Alex", "manualRideCount": 0}
     stopped_rides_pages: list[list[dict]] = [[]]
+    # Newest remote ride (`{id, startTime}` or None), as returned to
+    # /api/sync/status — set by a test to simulate Liberty Rider having
+    # something this account hasn't imported yet.
+    latest_ride: dict | None = None
 
     def __init__(self, token):
         self.token = token
@@ -63,6 +68,9 @@ class FakeLRClient:
 
     def get_current_user(self):
         return type(self).current_user
+
+    def get_latest_ride(self):
+        return type(self).latest_ride
 
     def get_stopped_rides(self, first=50, before=None, after=None, only_favorites=False):
         pages = type(self).stopped_rides_pages
@@ -86,6 +94,7 @@ def login_as(app_module, monkeypatch):
             lambda e, p, k: {"id_token": f"tok-{user_id}", "refresh_token": f"refresh-{user_id}"},
         )
         FakeLRClient.current_user = {"id": user_id, "firstName": first_name, "manualRideCount": 0}
+        FakeLRClient.latest_ride = None
         resp = test_client.post("/api/auth/login", json={"email": email, "password": password})
         assert resp.status_code == 200, resp.text
         return resp
