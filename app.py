@@ -1006,6 +1006,7 @@ def api_purge_account_data(user=Depends(get_session_user)):
     conn = db.connect()
     try:
         db.purge_user_data(conn, user["id"])
+        logger.warning("account data purged for user %s", _log_safe(user["id"]))
     finally:
         conn.close()
     return {"ok": True}
@@ -1018,6 +1019,7 @@ def api_admin_stats(user=Depends(get_session_user)):
     up. Gated on ADMIN_USER_IDS (returns 403 otherwise)."""
     if user["id"] not in ADMIN_USER_IDS:
         raise HTTPException(status_code=403, detail="Not available on this account")
+    logger.info("admin dashboard read by user %s", _log_safe(user["id"]))
     conn = db.connect()
     try:
         rows = conn.execute(
