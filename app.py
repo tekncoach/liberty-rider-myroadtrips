@@ -27,6 +27,7 @@ from fastapi.responses import Response as RawResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import crypto
 import db
 import elevation
 import mountain_pass
@@ -59,6 +60,20 @@ ADMIN_USER_IDS = {u.strip() for u in os.environ.get("ADMIN_USER_IDS", "").split(
 # to comparing hosts — see _is_cross_site().
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "").strip()
 
+def _encrypt_tokens_at_startup() -> None:
+    """Brings existing rows up to date when a key is first configured — and
+    states plainly, in the log, which mode the process is running in."""
+    if not crypto.is_enabled():
+        logger.warning("TOKEN_ENCRYPTION_KEY is not set — Liberty Rider tokens are stored in clear")
+        return
+    conn = db.connect()
+    try:
+        migrated = db.encrypt_plaintext_tokens(conn)
+        logger.info("token encryption active (%s row(s) migrated)", migrated)
+    finally:
+        conn.close()
+
+
 def _purge_expired_sessions_at_startup() -> None:
     """Nothing else removes an expired row on a long-running server between
     logins, so the table is swept once on boot too."""
@@ -73,6 +88,7 @@ def _purge_expired_sessions_at_startup() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    _encrypt_tokens_at_startup()
     _purge_expired_sessions_at_startup()
     # Not `yield`ed to for TestClient(app) used without a `with` block
     # (every test fixture here) — db.init_db() below still runs eagerly

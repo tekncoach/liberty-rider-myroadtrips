@@ -3,11 +3,15 @@
 # the result — so a commit is never the thing that discovers a lint failure.
 # Blocks only on what ruff cannot fix by itself.
 #
-# Shared by every worktree of this repo: enabled with an absolute
-# core.hooksPath, so a worktree on a branch that doesn't carry this file
-# still gets it.
+# Install it (once per clone) with:
 #
-#   git config core.hooksPath "$(pwd)/hooks"
+#   make hooks
+#
+# which copies this file into $(git rev-parse --git-common-dir)/hooks/ —
+# shared by every worktree, and independent of which branch each one has
+# checked out. An earlier version pointed core.hooksPath at this directory
+# instead; that silently disabled the hook for everyone as soon as the main
+# checkout moved to a branch not carrying the file.
 #
 # Skip for one commit with `git commit --no-verify` (and say why).
 #

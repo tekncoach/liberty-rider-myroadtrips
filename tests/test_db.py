@@ -1,15 +1,28 @@
 import sqlite3
 
 import pytest
-from conftest import make_ride
+from conftest import insert_returning_id, make_ride, table_names
 
 import db as db_module
+
+# Whichever driver is under the test, a constraint violation must raise.
+if db_module.IS_POSTGRES:
+    import psycopg
+
+    INTEGRITY_ERRORS = psycopg.errors.IntegrityError
+else:
+    INTEGRITY_ERRORS = sqlite3.IntegrityError
 
 
 @pytest.fixture
 def conn(temp_db):
     db_module.init_db()
     connection = db_module.connect()
+    # rides.user_id / tags.user_id are real foreign keys. SQLite doesn't
+    # enforce them unless asked, Postgres always does — so the owner every
+    # test below references has to actually exist.
+    db_module.upsert_user(connection, "u1", "Alex", "alex@example.com")
+    connection.commit()
     yield connection
     connection.close()
 
@@ -18,10 +31,7 @@ def conn(temp_db):
 
 
 def test_init_db_creates_expected_tables(conn):
-    tables = {
-        row["name"]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
+    tables = table_names(conn)
     for expected in ("users", "sessions", "rides", "roadtrips", "pauses", "sync_state", "tags", "ride_tags"):
         assert expected in tables
 
@@ -31,11 +41,7 @@ def test_init_db_is_idempotent(temp_db):
     db_module.init_db()  # must not raise on a second run
     conn = db_module.connect()
     try:
-        tables = {
-            row["name"]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
-        assert "rides" in tables
+        assert "rides" in table_names(conn)
     finally:
         conn.close()
 
@@ -58,6 +64,7 @@ def test_upsert_ride_inserts_new_ride(conn):
 
 
 def test_upsert_ride_update_preserves_roadtrip_id_and_merged_into(conn):
+    trip_id = insert_returning_id(conn, "INSERT INTO roadtrips (user_id, name) VALUES (?, ?)", ("u1", "Trip"))
     ride = make_ride("r1", "2024-01-01T10:00:00Z", name="Original name", distance=10.0)
     db_module.upsert_ride(conn, "u1", ride)
     conn.commit()
@@ -68,7 +75,7 @@ def test_upsert_ride_update_preserves_roadtrip_id_and_merged_into(conn):
     conn.execute(
         "INSERT INTO rides (id, user_id, start_time) VALUES ('r2', 'u1', '2024-01-01T09:00:00Z')"
     )
-    conn.execute("UPDATE rides SET roadtrip_id = ?, merged_into = ? WHERE id = 'r1'", (5, "r2"))
+    conn.execute("UPDATE rides SET roadtrip_id = ?, merged_into = ? WHERE id = 'r1'", (trip_id, "r2"))
     conn.commit()
 
     updated_ride = make_ride("r1", "2024-01-01T10:00:00Z", name="Updated name", distance=99.0)
@@ -78,7 +85,7 @@ def test_upsert_ride_update_preserves_roadtrip_id_and_merged_into(conn):
     row = conn.execute("SELECT * FROM rides WHERE id = 'r1'").fetchone()
     assert row["name"] == "Updated name"
     assert row["distance"] == 99.0
-    assert row["roadtrip_id"] == 5
+    assert row["roadtrip_id"] == trip_id
     assert row["merged_into"] == "r2"
 
 
@@ -204,6 +211,7 @@ def test_claim_orphaned_data_does_not_claim_for_second_user(conn):
 
 
 def test_claim_orphaned_data_noop_when_no_users(conn):
+    conn.execute("DELETE FROM users")  # this one needs a database with no account at all
     _insert_orphan_ride(conn, "r1")
     conn.commit()
     # Should not raise even though 0 users exist (defensive — shouldn't
@@ -228,8 +236,9 @@ def test_tags_same_name_allowed_for_different_users(conn):
 
 
 def test_tags_same_name_rejected_twice_for_same_user(conn):
-    db_module.upsert_user(conn, "u1", "Alex", "alex@example.com")
     conn.execute("INSERT INTO tags (user_id, name) VALUES ('u1', 'scenic')")
     conn.commit()
-    with pytest.raises(sqlite3.IntegrityError):
+    # sqlite3 raises IntegrityError, psycopg raises UniqueViolation — the
+    # assertion is that the constraint fires, not which library says so.
+    with pytest.raises(INTEGRITY_ERRORS):
         conn.execute("INSERT INTO tags (user_id, name) VALUES ('u1', 'scenic')")

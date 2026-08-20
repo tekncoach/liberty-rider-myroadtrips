@@ -15,12 +15,46 @@ from fastapi.testclient import TestClient
 
 import db as db_module
 
+# Tables that must survive between tests: the migration ledger, or every
+# test would replay the whole Postgres migration history.
+_KEEP_TABLES = {"schema_migrations"}
+
+
+def _reset_postgres() -> None:
+    """Give this test an empty database.
+
+    On SQLite each test gets its own file, so isolation is free. On Postgres
+    every test shares the one server the CI service container provides —
+    monkeypatching DB_PATH there does nothing at all, so without this the
+    suite silently ran every test on top of the previous one's rows (404s on
+    data another test created, counts off by one). That is why the
+    Postgres CI job was red while the SQLite suite was green.
+    """
+    db_module.init_db()  # tables have to exist before they can be truncated
+    conn = db_module.connect()
+    try:
+        rows = conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
+        ).fetchall()
+        names = [r["tablename"] for r in rows if r["tablename"] not in _KEEP_TABLES]
+        if names:
+            # Table names come from the catalogue, never from a test.
+            conn.execute(
+                f"TRUNCATE {', '.join(names)} RESTART IDENTITY CASCADE"
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
 
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
-    """Point db.DB_PATH at a throwaway file for the duration of this test."""
+    """Point db.DB_PATH at a throwaway file for the duration of this test —
+    or, on Postgres, wipe the shared database instead."""
     db_path = tmp_path / "test.db"
     monkeypatch.setattr(db_module, "DB_PATH", db_path)
+    if db_module.IS_POSTGRES:
+        _reset_postgres()
     return db_path
 
 
@@ -100,6 +134,24 @@ def login_as(app_module, monkeypatch):
         return resp
 
     return _login
+
+
+def table_names(conn) -> set[str]:
+    """The database's tables, whichever backend is under the test."""
+    if db_module.IS_POSTGRES:
+        rows = conn.execute("SELECT tablename AS name FROM pg_tables WHERE schemaname = current_schema()")
+    else:
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    return {row["name"] for row in rows}
+
+
+def insert_returning_id(conn, sql: str, params: tuple) -> int:
+    """INSERT and hand back the generated id. `cursor.lastrowid` is a
+    sqlite3 thing — psycopg has no such attribute — so this uses RETURNING,
+    which both backends support."""
+    row = conn.execute(f"{sql} RETURNING id", params).fetchone()
+    conn.commit()
+    return row["id"]
 
 
 def make_ride(

@@ -1,5 +1,5 @@
 """POST /api/rides/merge validation rules and lossless unmerge."""
-from conftest import make_ride
+from conftest import insert_returning_id, make_ride
 
 import db as db_module
 
@@ -16,9 +16,7 @@ def _seed_ride(user_id, ride_id, start_time, **kw):
 def _seed_roadtrip(user_id, name):
     conn = db_module.connect()
     try:
-        cur = conn.execute("INSERT INTO roadtrips (user_id, name) VALUES (?, ?)", (user_id, name))
-        conn.commit()
-        return cur.lastrowid
+        return insert_returning_id(conn, "INSERT INTO roadtrips (user_id, name) VALUES (?, ?)", (user_id, name))
     finally:
         conn.close()
 
