@@ -95,9 +95,12 @@ where you have been, so it is worth being explicit about what it keeps.
   tokens.
 - **Those tokens are stored**, in the same database as your rides (the
   SQLite file or Postgres), so syncing doesn't ask for your password
-  again. They are *not* encrypted at the field level: the app relies on
-  the host's own storage and access controls. Worth weighing before you
-  host this for other people. Logging out deletes them.
+  again — and they are **encrypted at rest** when `TOKEN_ENCRYPTION_KEY`
+  is set, with a key kept outside the database (see
+  [docs/TOKEN-ENCRYPTION.md](docs/TOKEN-ENCRYPTION.md)). Without that
+  variable they are stored in clear, which is fine for a local instance and
+  worth weighing before hosting this for other people. Logging out of your
+  last session deletes them.
 - **Sessions expire** server-side and are purged; every ride, roadtrip and
   tag row is scoped to your Liberty Rider user id, and every API request
   is checked against it.

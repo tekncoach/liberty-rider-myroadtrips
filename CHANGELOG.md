@@ -48,6 +48,15 @@ cut.
   with the last session of an account.
 - An explicit `Origin` check on mutating requests, length caps on user
   input, and defensive `user_id` scoping on every query.
+- **Liberty Rider tokens are encrypted at rest** (Fernet, key supplied out
+  of band via `TOKEN_ENCRYPTION_KEY`; rows written before the key existed
+  are migrated in place on the next boot). **Operators: set the key before
+  deploying this**, or tokens stay in clear until the following restart —
+  see [docs/TOKEN-ENCRYPTION.md](docs/TOKEN-ENCRYPTION.md).
+- `POST /api/auth/logout-all` drops every session of an account and the
+  stored tokens with them.
+- User-supplied values are neutralised before reaching a log line, so a
+  newline in an email can no longer forge journal entries.
 
 The full write-up, including what was deliberately left open, is in
 [docs/SECURITY-REMEDIATION.md](docs/SECURITY-REMEDIATION.md).
