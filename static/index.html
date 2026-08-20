@@ -39,14 +39,25 @@
     --pause: #2b7de0;
   }
   * { box-sizing: border-box; }
+  /* Dialogs take focus themselves when they open (see openDialog in
+     app.js); they are containers, not controls, so no focus ring. */
+  [role="dialog"]:focus { outline: none; }
   body {
     margin: 0; height: 100vh; overflow: hidden; background: var(--bg); color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
   #app { display: flex; height: 100vh; }
   #sidebar { width: 400px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--panel); overflow: hidden; }
-  h1 { font-size: 14.5px; font-weight: 600; margin: 16px 16px 3px; }
+  /* The wordmark shows up twice — once on the login screen, once in the
+     sidebar — but only one of the two is ever displayed, and neither is
+     the document's heading: that one is .visually-hidden, at the top of
+     the body, so the page carries exactly one h1 in every state. */
+  .brand { font-size: 14.5px; font-weight: 600; margin: 16px 16px 3px; }
   .sub { font-size: 11px; color: var(--muted); margin: 0 16px 10px; line-height: 1.4; }
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
 
   #authScreen {
     height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg);
@@ -55,7 +66,7 @@
     width: min(420px, 90vw); background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
     padding: 28px 28px 22px; box-shadow: var(--shadow);
   }
-  #authCard h1 { margin: 0 0 10px; font-size: 20px; }
+  #authCard .brand { margin: 0 0 10px; font-size: 20px; }
   #authCard .sub { margin: 0 0 16px; font-size: 12.5px; line-height: 1.5; }
   #loginForm { display: flex; flex-direction: column; gap: 8px; }
   #loginForm input {
@@ -402,9 +413,10 @@
 </style>
 </head>
 <body>
+<h1 class="visually-hidden">Carnet de Route — historique de tes trajets moto</h1>
 <div id="authScreen">
   <div id="authCard">
-    <h1>🏍️ Carnet de Route</h1>
+    <p class="brand">🏍️ Carnet de Route</p>
     <p class="sub">
       Connecte-toi avec les <strong>mêmes identifiants que sur Liberty Rider</strong>
       (l'app ou le site officiel) — ton email et ton mot de passe habituels.
@@ -428,7 +440,7 @@
 </div>
 <div id="app" style="display:none">
   <div id="sidebar">
-    <h1>🏍️ Carnet de Route</h1>
+    <p class="brand">🏍️ Carnet de Route</p>
     <p class="sub">Historique de tes trajets GPS moto, synchronisés depuis Liberty Rider.</p>
     <div id="tabs">
       <button id="tabUngrouped" class="active">📍 Mes traces</button>
@@ -436,7 +448,8 @@
       <button id="tabTags">🏷️ Tags</button>
     </div>
     <div id="listtoolbar">
-      <input type="search" id="rideSearchInput" placeholder="🔎 Rechercher (titre, note, col)…" />
+      <input type="search" id="rideSearchInput" placeholder="🔎 Rechercher (titre, note, col)…"
+             aria-label="Rechercher un trajet par titre, note ou nom de col" />
       <label><input type="checkbox" id="hideOrganizedToggle" /> Masquer les groupés/taggués</label>
     </div>
     <div id="tagshint">Les tags se gèrent depuis la fiche d'un trajet (onglet « Mes traces », clique sur un trajet).</div>
@@ -444,7 +457,7 @@
     <div id="selectionbar">
       <span id="selcount">Coche des trajets ci-dessus pour les regrouper.</span>
       <div class="row">
-        <input id="newTripName" placeholder="Nom du roadtrip…" />
+        <input id="newTripName" placeholder="Nom du roadtrip…" aria-label="Nom du nouveau roadtrip" />
         <button id="createTripBtn" class="primary" disabled>Créer</button>
       </div>
       <div class="row">
@@ -458,8 +471,10 @@
           <div id="userName"></div>
           <div id="userSub"></div>
         </div>
-        <button id="syncBtn" class="primary" title="Synchroniser : récupère les trajets les plus récents">⟳</button>
-        <button id="userMenuBtn" title="Plus d'options">⋯</button>
+        <button id="syncBtn" class="primary" title="Synchroniser : récupère les trajets les plus récents"
+                aria-label="Synchroniser : récupère les trajets les plus récents">⟳</button>
+        <button id="userMenuBtn" title="Plus d'options" aria-label="Plus d'options"
+                aria-haspopup="menu" aria-expanded="false">⋯</button>
         <div id="userMenu">
           <button id="syncFullBtn">
             <span class="menu-title">Resynchroniser tout l'historique</span>
@@ -489,14 +504,18 @@
 </div>
 
 <div id="rideModalBackdrop">
-  <div id="rideModal">
+  <div id="rideModal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="rideModalTitle">
     <div id="rideModalHead">
       <h2 id="rideModalTitle"></h2>
       <a id="rideModalGpx" href="#"><button>📄 Télécharger en GPX</button></a>
       <button id="rideModalClose">Fermer</button>
     </div>
     <div id="rideModalSubtitle"></div>
-    <div id="rideModalDetailsHeader"><span>Détails</span><button id="rideModalDetailsToggle">▾</button></div>
+    <div id="rideModalDetailsHeader">
+      <span>Détails</span>
+      <button id="rideModalDetailsToggle" aria-label="Replier ou déplier les détails"
+              aria-expanded="true" aria-controls="rideModalDetailsBody">▾</button>
+    </div>
     <div id="rideModalDetailsBody">
       <div id="rideModalTimeline" class="mini-chart"></div>
       <div id="rideModalStats"></div>
@@ -504,11 +523,12 @@
       <div id="rideModalStatsTrack"></div>
     </div>
     <div id="rideModalNotes">
-      <div id="rideModalNotesText" contenteditable="true" data-placeholder="Ajoute une note sur ce trajet… (un souvenir, un point de repère, une info utile)"></div>
+      <div id="rideModalNotesText" contenteditable="true" role="textbox" aria-multiline="true"
+           aria-label="Note sur ce trajet" data-placeholder="Ajoute une note sur ce trajet… (un souvenir, un point de repère, une info utile)"></div>
     </div>
     <div id="rideModalTags">
       <span id="rideModalTagChips"></span>
-      <input id="rideModalTagInput" placeholder="+ Tag…" />
+      <input id="rideModalTagInput" placeholder="+ Tag…" aria-label="Ajouter un tag à ce trajet" />
     </div>
     <div id="rideModalMerge"></div>
     <div id="rideModalMap"></div>
@@ -517,7 +537,7 @@
 
 <div id="tourOverlay">
   <div id="tourSpotlight"></div>
-  <div id="tourTooltip">
+  <div id="tourTooltip" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="tourStepTitle" aria-describedby="tourStepText">
     <h3 id="tourStepTitle"></h3>
     <p id="tourStepText"></p>
     <div class="tour-footer">
@@ -532,9 +552,9 @@
 </div>
 
 <div id="adminModalBackdrop">
-  <div id="adminModal">
+  <div id="adminModal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="adminModalTitle">
     <div id="adminModalHead">
-      <h2>Admin — inscrits &amp; usage</h2>
+      <h2 id="adminModalTitle">Admin — inscrits &amp; usage</h2>
       <button id="adminModalClose">Fermer</button>
     </div>
     <div id="adminSummary"></div>

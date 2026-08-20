@@ -1,6 +1,8 @@
 """GET / (marketing landing page) vs GET /app (the actual SPA) — split so
 logged-out visitors land on marketing content, not the bare login form."""
 
+import re
+
 
 def test_root_serves_the_landing_page(client):
     resp = client.get("/")
@@ -45,3 +47,30 @@ def test_favicon_is_served(client):
     resp = client.get("/favicon.ico")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/svg+xml"
+
+
+def test_app_page_has_exactly_one_h1(client):
+    """Both the login card and the sidebar show the wordmark, but only one
+    of the two is ever on screen — neither is the document heading."""
+    assert len(re.findall(r"<h1[\s>]", client.get("/app").text)) == 1
+
+
+def test_modals_are_announced_as_dialogs(client):
+    """A <div> overlay is invisible to a screen reader without this, and
+    the label it announces has to point at an element that exists."""
+    html = client.get("/app").text
+    opening_tags = re.findall(r'<div[^>]*role="dialog"[^>]*>', html)
+    ids = sorted(re.search(r'id="([^"]+)"', tag).group(1) for tag in opening_tags)
+    assert ids == ["adminModal", "rideModal", "tourTooltip"]
+    for tag in opening_tags:
+        assert 'aria-modal="true"' in tag
+        labelled_by = re.search(r'aria-labelledby="([^"]+)"', tag).group(1)
+        assert f'id="{labelled_by}"' in html
+
+
+def test_icon_only_controls_carry_an_accessible_name(client):
+    """A button whose whole label is an emoji reads as nothing at all."""
+    html = client.get("/app").text
+    for element_id in ("syncBtn", "userMenuBtn", "rideModalDetailsToggle", "rideSearchInput"):
+        tag = re.search(rf'<(?:button|input)[^>]*id="{element_id}"[^>]*>', html, re.S).group(0)
+        assert "aria-label=" in tag, element_id
