@@ -20,7 +20,9 @@ def test_security_headers_on_every_response(client):
 
 def test_csp_allows_what_the_page_actually_loads(client):
     csp = client.get("/app").headers["content-security-policy"]
-    assert "script-src 'self' https://unpkg.com" in csp
+    # Leaflet is vendored under /static, so no CDN belongs in script-src.
+    assert "script-src 'self'" in csp
+    assert "unpkg.com" not in csp
     assert "https://*.tile.openstreetmap.org" in csp
     assert "object-src 'none'" in csp
 

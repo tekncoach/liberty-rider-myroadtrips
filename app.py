@@ -121,15 +121,15 @@ async def _lifespan(app: FastAPI):
 # production — set EXPOSE_API_DOCS=1 to opt back in.
 EXPOSE_API_DOCS = os.environ.get("EXPOSE_API_DOCS") == "1" or not COOKIE_SECURE
 
-# Everything this frontend loads: Leaflet from unpkg (pinned + SRI, see
-# static/index.html), OSM/Liberty Rider map tiles as images, and its own
-# API. `style-src 'unsafe-inline'` is still needed because index.html
-# carries its whole stylesheet in a <style> block — moving it to a served
-# .css file is what would let that last exception go.
+# Everything this frontend loads: Leaflet from our own /static/vendor (no
+# CDN at all since SC-01), OSM/Liberty Rider map tiles as images, and its
+# own API. `style-src 'unsafe-inline'` is still needed because the pages
+# carry their stylesheet in a <style> block and the charts set inline
+# `style` attributes for computed bar heights.
 CSP = (
     "default-src 'self'; "
-    "script-src 'self' https://unpkg.com; "
-    "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: https://*.tile.openstreetmap.org https://tiles.liberty-rider.com; "
     "connect-src 'self'; "
     "font-src 'self'; "
