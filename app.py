@@ -1501,9 +1501,11 @@ def _public_ride_dict(conn, row) -> dict:
     `merge_ride_ids` / `created_roadbook_id` (internal structure of somebody
     else's account), `hidden` / `is_favorite` / `state` (internal),
     `preview_picture_url` (a Liberty Rider CDN URL — an outbound request to
-    a third party carrying that ride's id), and `start_lat` / `start_lon` /
+    a third party carrying that ride's id), `start_lat` / `start_lon` /
     `stop_lat` / `stop_lon` (the home address, in two decimal pairs, and
-    flatly incompatible with truncating the track). Nothing identifies the
+    flatly incompatible with truncating the track), and `vehicle_brand` /
+    `vehicle_model` (the owner's call: a bike is recognisable, and which one
+    you ride is not part of "here is where I went"). Nothing identifies the
     owner: no name, no email, no user id — a shared ride is anonymous."""
     ride = _merged_ride_dict(conn, row)
     points, pauses = _merged_polyline_and_pauses(conn, row)
@@ -1517,8 +1519,6 @@ def _public_ride_dict(conn, row) -> dict:
         "total_pauses_duration": ride["total_pauses_duration"],
         "pause_count": ride["pause_count"],
         "maximum_altitude": ride["maximum_altitude"],
-        "vehicle_brand": ride["vehicle_brand"],
-        "vehicle_model": ride["vehicle_model"],
         # One encoded string for the whole merge group, re-encoded after
         # truncation — same wire format the private detail endpoint uses,
         # so the client decodes it with the same code.

@@ -210,7 +210,7 @@ Voici l'audit champ par champ de ce que renvoie aujourd'hui
 | --- | --- | --- |
 | `name`, `start_time`, `distance`, `duration`, `duration_without_pauses`, `total_pauses_duration`, `pause_count`, `maximum_altitude` | ✅ | Le contenu même du partage |
 | `polyline` (chaînes encodées), `pauses`, `timeline` | ✅ | La trace et sa chronologie — voir la troncature ci-dessous |
-| `vehicle_brand`, `vehicle_model` | ⚠️ **décision du propriétaire** | Cosmétique et « Strava-like », mais identifie la moto. Recommandation : garder, c'est le genre d'info qu'on partage volontiers. Trivial à retirer. |
+| `vehicle_brand`, `vehicle_model` | ❌ | Point laissé au propriétaire (§8), **tranché : retirés**. Une moto se reconnaît, et laquelle on roule ne fait pas partie de « voilà où je suis allé ». |
 | `id` | ❌ | C'est l'id Liberty Rider, traçable vers le compte |
 | `merge_ride_ids`, `merged_into`, `created_roadbook_id`, `roadtrip_id` | ❌ | Ids internes et Liberty Rider ; `roadtrip_id` révèle en plus l'organisation du compte |
 | `notes` | ❌ | Note privée, souvent personnelle |
@@ -538,8 +538,9 @@ utile qu'à la toute fin.
 
 ## 8. Ce qui reste à trancher par le propriétaire
 
-1. **`vehicle_brand` / `vehicle_model` sur la page publique** — recommandation :
-   les garder (§3). Une ligne à retirer si non.
+1. ~~**`vehicle_brand` / `vehicle_model` sur la page publique**~~ — **tranché
+   par le propriétaire : retirés.** La référence de la moto n'a pas sa place
+   sur la page publique.
 2. **Troncature à 250 m activée par défaut** — recommandation : oui. La valeur
    se discute (100 m ? 500 m ?).
 3. **Attribution** — v1 anonyme, aucun prénom sur la page. Afficher « Trajet
@@ -562,9 +563,8 @@ Le plan a été suivi tel quel, à quatre détails près :
    route montre ce passage.
 2. **Régénération** — exposée comme `POST …/share {"regenerate": true}` plutôt
    que comme une route dédiée, pour rester sur le modèle pydantic du repo.
-3. **Marque/modèle de moto** — conservés dans la charge utile publique (§8,
-   point 1). Deux lignes à retirer dans `_public_ride_dict` si le propriétaire
-   tranche autrement.
+3. **Marque/modèle de moto** — d'abord conservés, puis **retirés** sur
+   décision du propriétaire (§8, point 1).
 4. **Étape 6** — faite dans le même lot : balises Open Graph, pastille 🔗 dans
    la liste, docs. Le plan la donnait comme optionnelle.
 

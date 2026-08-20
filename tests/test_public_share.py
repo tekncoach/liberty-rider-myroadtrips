@@ -23,8 +23,6 @@ PUBLIC_KEYS = {
     "total_pauses_duration",
     "pause_count",
     "maximum_altitude",
-    "vehicle_brand",
-    "vehicle_model",
     "polyline",
     "pauses",
     "timeline",
@@ -232,6 +230,20 @@ def test_the_public_payload_carries_no_start_or_stop_coordinates(client, make_cl
 
     assert "start_lat" not in body and "stop_lat" not in body
     assert "48.8566" not in make_client().get(f"/api/public/rides/{token}").text
+
+
+def test_the_public_payload_says_nothing_about_the_bike(client, make_client, login_as):
+    """The owner's call: a bike is recognisable, and which one you ride is
+    not part of "here is where I went"."""
+    login_as(client, "user-1")
+    _seed_ride("user-1", "r1", "2024-01-01T10:00:00Z")
+    token = _share(client, "r1")["token"]
+
+    raw = make_client().get(f"/api/public/rides/{token}").text
+
+    # conftest's make_ride puts a Honda CB500 on every seeded ride.
+    assert "Honda" not in raw
+    assert "CB500" not in raw
 
 
 def test_the_public_payload_never_identifies_the_owner(client, make_client, login_as):

@@ -149,15 +149,14 @@ user — and return an explicit allow-list of fields. See
 ### `GET /api/public/rides/{token}`
 The shared ride: `{ name, start_time, distance, duration,
 duration_without_pauses, total_pauses_duration, pause_count,
-maximum_altitude, vehicle_brand, vehicle_model, polyline, pauses, timeline,
-track_truncated }`. `polyline` is a one-element list of an encoded polyline
+maximum_altitude, polyline, pauses, timeline, track_truncated }`. `polyline` is a one-element list of an encoded polyline
 string (decoded client-side, same as the private detail endpoint);
 `pauses` is `[{lat, lon, automatic}, ...]`.
 
 Notably **absent**, all deliberately: the ride id, `notes`, `tags`,
 `roadtrip_id`/`merged_into`/`merge_ride_ids`, `preview_picture_url`,
-`start_lat`/`start_lon`/`stop_lat`/`stop_lon`, and anything identifying the
-owner. `track_truncated` says whether the track was trimmed at both ends
+`start_lat`/`start_lon`/`stop_lat`/`stop_lon`, `vehicle_brand`/
+`vehicle_model`, and anything identifying the owner. `track_truncated` says whether the track was trimmed at both ends
 (it nearly always is — see `SHARE_TRUNCATION_M` in `app.py`).
 
 **404** for an unknown, revoked *or* expired token, with an identical body

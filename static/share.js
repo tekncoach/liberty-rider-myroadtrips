@@ -31,7 +31,6 @@ function renderStats(ride) {
   document.getElementById("rideSubtitle").textContent =
     `${fmtDay(ride.start_time)} · ${fmtTime(ride.start_time)} → ${fmtTime(endTime)}`;
 
-  const vehicle = [ride.vehicle_brand, ride.vehicle_model].filter(Boolean).join(" ");
   const stats = [
     [fmtKm(ride.distance), "Distance"],
     [fmtDuration(ride.duration), "Durée totale"],
@@ -39,7 +38,6 @@ function renderStats(ride) {
     [fmtAvgSpeed(ride.distance, ride.duration_without_pauses), "Vitesse moy."],
     [fmtAlt(ride.maximum_altitude), "Altitude max."],
   ];
-  if (vehicle) stats.push([vehicle, "Moto"]);
   document.getElementById("stats").innerHTML = stats
     .map(([v, l]) => `<div class="stat"><div class="v">${escapeHtml(v)}</div><div class="l">${escapeHtml(l)}</div></div>`)
     .join("");
