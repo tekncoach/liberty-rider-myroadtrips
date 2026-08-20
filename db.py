@@ -294,6 +294,11 @@ def init_db() -> None:
     try:
         if IS_POSTGRES:
             _run_postgres_migrations(conn)
+            # Same guarantee as the SQLite path below, and on every boot
+            # rather than once at migration time: a session row can never be
+            # left without a deadline.
+            _backfill_session_expiry(conn)
+            conn.commit()
             return
 
         conn.executescript(SCHEMA)
@@ -320,13 +325,7 @@ def init_db() -> None:
         sessions_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
         if "expires_at" not in sessions_cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
-        # Backfilled from created_at rather than left NULL: a NULL row would
-        # be accepted forever by get_session_user() and skipped by
-        # delete_expired_sessions(), i.e. an immortal session.
-        conn.execute(
-            f"UPDATE sessions SET expires_at = datetime(created_at, '+{SESSION_TTL_DAYS} days') "
-            "WHERE expires_at IS NULL"
-        )
+        _backfill_session_expiry(conn)
 
         conn.executescript(POST_MIGRATION_INDEXES)
         conn.commit()
@@ -367,6 +366,23 @@ def _table_exists(conn: DBConnection, name: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone() is not None
+
+
+def _backfill_session_expiry(conn: DBConnection) -> int:
+    """Give a deadline to any session row that lacks one.
+
+    A NULL expires_at would be accepted forever by get_session_user() and
+    skipped by delete_expired_sessions() — immortal and unpurgeable. Done row
+    by row in Python rather than in SQL, because date arithmetic is where the
+    two backends' dialects diverge most; there are only ever a handful of
+    rows, and after the first run there are none.
+    """
+    rows = conn.execute("SELECT id, created_at FROM sessions WHERE expires_at IS NULL").fetchall()
+    for row in rows:
+        created = datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        expires = (created + timedelta(days=SESSION_TTL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("UPDATE sessions SET expires_at = ? WHERE id = ?", (expires, row["id"]))
+    return len(rows)
 
 
 def _migrate_users_table(conn: DBConnection) -> None:
