@@ -20,3 +20,4 @@ data/
 .ruff_cache/
 .mypy_cache/
 .claude/
+.playwright-mcp/
