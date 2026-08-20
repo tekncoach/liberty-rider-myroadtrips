@@ -314,7 +314,7 @@ Les deux backends, comme le veut `db.py` :
 - **SQLite** — ajouter le bloc à la constante `SCHEMA` (`db.py:59`). Le
   `CREATE TABLE IF NOT EXISTS` est rejoué à chaque `init_db()` : les bases
   existantes récupèrent la table sans migration `ALTER`.
-- **Postgres** — **nouveau fichier** `migrations/0002_ride_shares.sql` (ne
+- **Postgres** — **nouveau fichier** `migrations/0003_ride_shares.sql` (ne
   jamais modifier `0001`, déjà appliqué), avec `token TEXT PRIMARY KEY`,
   `SERIAL` hors sujet ici, et `ALTER TABLE ride_shares ENABLE ROW LEVEL
   SECURITY;` en fin de fichier.
@@ -403,7 +403,7 @@ servir, une page sans endpoint), et elles se mergent forcément ensemble.
 
 | # | Contenu | Fichiers | Effort |
 | --- | --- | --- | --- |
-| 1 | Schéma + helpers `db.py` + `DELETE` dans `purge_user_data` | `db.py`, `migrations/0002_ride_shares.sql` | ~90 l. · **1 h** |
+| 1 | Schéma + helpers `db.py` + `DELETE` dans `purge_user_data` | `db.py`, `migrations/0003_ride_shares.sql` | ~90 l. · **1 h** |
 | 2 | Endpoints authentifiés (`POST`/`DELETE .../share`, champ `share` dans le détail) + révocation à la fusion | `app.py` | ~70 l. · **1 h** |
 | 3 | Endpoint public en liste blanche + troncature + `/t/{token}` + `noindex` + `Referrer-Policy` + `robots.txt` | `app.py` | ~90 l. · **1 h 15** |
 | 4 | Extraction de `shared.js`, page `share.html` + `share.js` | `static/` | ~300 l. dont ~90 déplacées · **2 h** |

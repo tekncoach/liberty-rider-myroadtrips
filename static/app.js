@@ -670,7 +670,7 @@ function closeRideModal() {
   rideModalBackdrop.classList.remove("visible");
   releaseDialog(document.getElementById("rideModal"));
   document.getElementById("rideModalShare").hidden = true;
-  document.getElementById("rideModalMenu").classList.remove("open");
+  setRideModalMenu(false);
   if (state.rideModalMap) {
     state.rideModalMap.remove();
     state.rideModalMap = null;
@@ -710,7 +710,7 @@ async function openRideModal(id) {
   // public link (see the `share` field on /api/rides/{id}).
   state.rideShare = ride.share || null;
   document.getElementById("rideModalShare").hidden = true;
-  rideModalMenu.classList.remove("open");
+  setRideModalMenu(false);
   const notesEl = document.getElementById("rideModalNotesText");
   notesEl.textContent = ride.notes || "";
   rideModalBackdrop.classList.add("visible");
@@ -828,15 +828,20 @@ const rideModalMenu = document.getElementById("rideModalMenu");
 
 document.getElementById("rideModalMenuBtn").addEventListener("click", (e) => {
   e.stopPropagation();
-  rideModalMenu.classList.toggle("open");
+  setRideModalMenu(rideModalMenu.classList.toggle("open"));
 });
 // Same dismissal as #userMenu: any click outside closes it.
 document.addEventListener("click", (e) => {
-  if (!rideModalMenu.contains(e.target)) rideModalMenu.classList.remove("open");
+  if (!rideModalMenu.contains(e.target)) setRideModalMenu(false);
 });
 
+function setRideModalMenu(open) {
+  rideModalMenu.classList.toggle("open", open);
+  document.getElementById("rideModalMenuBtn").setAttribute("aria-expanded", String(open));
+}
+
 document.getElementById("rideModalShareBtn").addEventListener("click", () => {
-  rideModalMenu.classList.remove("open");
+  setRideModalMenu(false);
   rideModalShare.hidden = !rideModalShare.hidden;
   if (!rideModalShare.hidden) renderRideModalShare();
 });
@@ -854,7 +859,7 @@ function renderRideModalShare() {
   }
   rideModalShare.innerHTML = `
     <div class="share-row">
-      <input id="shareUrl" readonly value="${escapeHtml(share.url)}" />
+      <input id="shareUrl" readonly aria-label="Lien public de ce trajet" value="${escapeHtml(share.url)}" />
       <button id="shareCopyBtn">Copier</button>
     </div>
     <div class="share-actions">

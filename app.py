@@ -1935,6 +1935,7 @@ def _render_share_page(title: str, description: str, url: str) -> str:
 <meta name="description" content="{attr(description)}" />
 <meta property="og:type" content="article" />
 <meta property="og:site_name" content="Carnet de Route" />
+<meta property="og:locale" content="fr_FR" />
 <meta property="og:title" content="{attr(title)}" />
 <meta property="og:description" content="{attr(description)}" />
 <meta property="og:url" content="{attr(url)}" />
@@ -2043,15 +2044,6 @@ def public_share_page(token: str, request: Request):
         conn.close()
     page = _render_share_page(title, description, _share_url(request, token))
     return HTMLResponse(page, headers=PUBLIC_PAGE_HEADERS)
-
-
-@app.get("/robots.txt")
-def robots_txt():
-    """Share links are unlisted, not secret-by-obscurity — but they have no
-    business in a search index either. Disallowing the prefix reveals
-    nothing (there is no token in it) and covers crawlers that fetch a URL
-    before reading its meta tags."""
-    return RawResponse("User-agent: *\nDisallow: /t/\nDisallow: /api/\n", media_type="text/plain")
 
 
 @app.get("/")
