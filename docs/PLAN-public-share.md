@@ -1,8 +1,10 @@
 ﻿# Plan — Lien public de partage d'un trajet
 
-> **Statut : PLAN, non implémenté.** Ce document est le livrable de la phase 1.
-> Aucune ligne de code n'a été écrite. Rien ne démarre sans un GO explicite du
-> propriétaire.
+> **Statut : implémenté sur `feat/public-share`.** Ce document était le livrable
+> de la phase 1 (le plan soumis au propriétaire avant tout code) ; il est
+> conservé tel quel comme trace de la décision. Ce qui a changé à
+> l'implémentation est noté en fin de document (§9). L'état de référence de la
+> fonctionnalité, lui, est `docs/ARCHITECTURE.md`.
 
 **Besoin** — pouvoir récupérer une URL publique pour un trajet déjà effectué et
 l'envoyer par WhatsApp. La page montre la trace sur une carte + les infos de
@@ -547,4 +549,25 @@ utile qu'à la toute fin.
 
 ---
 
-**Prochaine action : attendre le GO.** Aucune ligne de code ne sera écrite avant.
+## 9. Écarts entre ce plan et l'implémentation
+
+Le plan a été suivi tel quel, à quatre détails près :
+
+1. **Troncature** — le plan disait « supprimer les points dans un rayon de 250 m
+   du premier et du dernier point ». L'implémentation retire une **plage
+   contiguë** à chaque bout plutôt que tout point dans le rayon : filtrer
+   perce un trou au milieu d'une trace en boucle et trace une droite au
+   travers, ce qui se lit comme un bug et **désigne** le trou. Limite assumée et
+   écrite dans le code : une boucle qui repasse près de son départ en cours de
+   route montre ce passage.
+2. **Régénération** — exposée comme `POST …/share {"regenerate": true}` plutôt
+   que comme une route dédiée, pour rester sur le modèle pydantic du repo.
+3. **Marque/modèle de moto** — conservés dans la charge utile publique (§8,
+   point 1). Deux lignes à retirer dans `_public_ride_dict` si le propriétaire
+   tranche autrement.
+4. **Étape 6** — faite dans le même lot : balises Open Graph, pastille 🔗 dans
+   la liste, docs. Le plan la donnait comme optionnelle.
+
+Ce que le plan avait sous-estimé : rien de bloquant. Le modal n'a pas eu à être
+refactorisé, comme prévu — seules les fonctions déjà pures ont bougé dans
+`static/shared.js`.
