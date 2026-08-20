@@ -6,9 +6,15 @@ valid session (see `get_session_user`), and every query is scoped to that
 session's user. The only way to establish a session is POST /api/auth/login
 with an email + password, exchanged directly with Firebase — see
 firebase_refresh.py. There is no other login path.
+
+The one deliberate exception is a ride the owner has explicitly opted into
+a public link: those are reachable with no session at all, by unguessable
+token only, through a hand-written allow-list of fields. See the
+"public share links" section below and docs/ARCHITECTURE.md.
 """
 from __future__ import annotations
 
+import html
 import logging
 import os
 import pathlib
@@ -23,7 +29,7 @@ import gpxpy.gpx
 import polyline as polyline_lib
 import requests
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.responses import Response as RawResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -659,6 +665,19 @@ def _attach_tags_bulk(conn, rides: list[dict]) -> None:
         r["tags"] = by_ride[r["id"]]
 
 
+def _attach_shared_bulk(conn, rides: list[dict], user_id: str) -> None:
+    """Flags which rides currently have a live public link, so the list can
+    show it at a glance. One query for the whole account rather than one
+    per ride (this account's active shares are a handful of rows)."""
+    shared = {
+        r["ride_id"] for r in conn.execute(
+            "SELECT ride_id FROM ride_shares WHERE user_id = ? AND revoked_at IS NULL", (user_id,)
+        ).fetchall()
+    }
+    for ride in rides:
+        ride["shared"] = ride["id"] in shared
+
+
 def _attach_col_names_bulk(conn, rides: list[dict]) -> None:
     """Sets `col_names` on each ride dict in place — searchable col names
     discovered so far (see api_ride_cols), empty for a ride never opened."""
@@ -791,6 +810,13 @@ class AddRidesRequest(BaseModel):
 
 class MergeRidesRequest(BaseModel):
     ride_ids: list[str] = Field(max_length=RIDE_IDS_MAX)
+
+
+class ShareRequest(BaseModel):
+    # False (the default) is get-or-create: re-sharing an already-shared
+    # ride hands back the same link instead of quietly killing the one
+    # already sent. True mints a new token and kills the old one.
+    regenerate: bool = False
 
 
 # --- auth ---------------------------------------------------------------
@@ -1085,6 +1111,7 @@ def api_list_rides(grouped: bool | None = None, user=Depends(get_session_user)):
         members_map = _merge_members_map(conn, user["id"])
         rides = [_merged_ride_dict(conn, r, members_map) for r in rows]
         _attach_tags_bulk(conn, rides)
+        _attach_shared_bulk(conn, rides, user["id"])
         _attach_col_names_bulk(conn, rides)
         add_suggestions(rides)
         return rides
@@ -1100,11 +1127,14 @@ def _get_owned_ride(conn, ride_id: str, user_id: str):
 
 
 @app.get("/api/rides/{ride_id}")
-def api_ride_detail(ride_id: str, user=Depends(get_session_user)):
+def api_ride_detail(ride_id: str, request: Request, user=Depends(get_session_user)):
     conn = db.connect()
     try:
         row = _get_owned_ride(conn, ride_id, user["id"])
         ride = _merged_ride_dict(conn, row)
+        # `null` unless this ride currently has a live public link — saves
+        # the modal a second round-trip just to know which state to show.
+        ride["share"] = _share_view(request, db.get_active_share_for_ride(conn, ride_id))
         # Encoded polyline strings (decoded client-side, see _encoded_polylines);
         # pauses still come back decoded (few per ride, negligible).
         ride["polyline"] = _encoded_polylines(conn, row)
@@ -1274,6 +1304,11 @@ def api_merge_rides(req: MergeRidesRequest, user=Depends(get_session_user)):
 
         ordered = sorted(rows, key=lambda r: r["start_time"])
         representative = ordered[0]
+        # An absorbed ride's own public link would keep resolving to a row
+        # that is no longer its group's representative — showing a fragment
+        # of a ride the owner now thinks of as one. Cut those links rather
+        # than let them go quietly stale; the merged ride can be re-shared.
+        db.revoke_shares_for_rides(conn, [r["id"] for r in ordered[1:]])
         for r in ordered[1:]:
             conn.execute("UPDATE rides SET merged_into = ? WHERE id = ?", (representative["id"], r["id"]))
         if common_roadtrip_id is not None:
@@ -1374,6 +1409,177 @@ def api_detach_ride(ride_id: str, user=Depends(get_session_user)):
         conn.execute("UPDATE rides SET roadtrip_id = NULL WHERE id = ?", (ride_id,))
         conn.commit()
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+# --- public share links -------------------------------------------------
+# The one part of this app that answers to visitors with no session at all.
+# Two rules make that safe, and both are load-bearing:
+#
+#   1. The public read path resolves a ride BY TOKEN ONLY — `_get_shared_ride`
+#      never takes a ride id and never takes a user id. A ride id passed
+#      where a token belongs cannot match, so there is no way to walk the
+#      URL space into somebody else's data.
+#   2. The public payload is an ALLOW-LIST built by `_public_ride_dict`, not
+#      a filtered `_merged_ride_dict`. A field added to the private ride
+#      dict later is invisible here by default rather than leaking by
+#      default — and tests/test_public_share.py asserts the exact key set,
+#      so the decision has to be made explicitly.
+#
+# See docs/PLAN-public-share.md for the full threat model.
+
+# The first and last stretch of a track is, for most riders, their own
+# street. Every public track is trimmed by this much at both ends before
+# it ever reaches a visitor's browser — server-side, so the removed points
+# are not merely hidden but absent. Stats are NOT recomputed from the
+# trimmed track: the distance shown publicly stays the one the owner sees.
+SHARE_TRUNCATION_M = 250
+
+
+def _share_url(request: Request, token: str) -> str:
+    """Absolute URL for a token — what the owner copies into WhatsApp.
+    Built from the incoming request so it's right on 127.0.0.1 and behind a
+    real domain alike, with no base-URL setting to keep in sync."""
+    return f"{str(request.base_url).rstrip('/')}/t/{token}"
+
+
+def _share_view(request: Request, share) -> dict | None:
+    """The owner-facing shape of a share (never sent to a visitor)."""
+    if not share:
+        return None
+    return {
+        "token": share["token"],
+        "url": _share_url(request, share["token"]),
+        "created_at": share["created_at"],
+    }
+
+
+def _truncate_track(points: list, pauses: list) -> tuple[list, list, bool]:
+    """Trims the leading and trailing SHARE_TRUNCATION_M of a track, and
+    drops any pause inside either radius (a pause logged at home is the
+    single most revealing marker on the map).
+
+    Trims a contiguous run from each end rather than filtering every point
+    within the radius: filtering would punch a hole mid-track on a loop
+    ride and draw a straight line across it, which reads as a glitch and
+    points at the hole. The honest limit of this approach: a loop that
+    passes back near its own start mid-ride still shows that passage."""
+    if not points:
+        return points, pauses, False
+    start, end = points[0], points[-1]
+
+    def _m_from(ref, p):
+        return (haversine_km(ref[0], ref[1], p[0], p[1]) or 0) * 1000
+
+    head = 0
+    while head < len(points) and _m_from(start, points[head]) < SHARE_TRUNCATION_M:
+        head += 1
+    tail = len(points)
+    while tail > head and _m_from(end, points[tail - 1]) < SHARE_TRUNCATION_M:
+        tail -= 1
+    kept = points[head:tail]
+    if not kept:
+        # A ride shorter than two truncation radii is all endpoint. Publish
+        # no track at all rather than a token gesture at one.
+        return [], [], True
+    kept_pauses = [
+        p for p in pauses
+        if p.get("lat") is not None and p.get("lon") is not None
+        and _m_from(start, (p["lat"], p["lon"])) >= SHARE_TRUNCATION_M
+        and _m_from(end, (p["lat"], p["lon"])) >= SHARE_TRUNCATION_M
+    ]
+    return kept, kept_pauses, len(kept) != len(points)
+
+
+def _public_ride_dict(conn, row) -> dict:
+    """Everything a visitor gets, enumerated one field at a time.
+
+    Deliberately absent, and each for its own reason: `id` (the Liberty
+    Rider ride id, traceable back to the account), `notes` (private), `tags`
+    (the owner's private taxonomy), `roadtrip_id` / `merged_into` /
+    `merge_ride_ids` / `created_roadbook_id` (internal structure of somebody
+    else's account), `hidden` / `is_favorite` / `state` (internal),
+    `preview_picture_url` (a Liberty Rider CDN URL — an outbound request to
+    a third party carrying that ride's id), and `start_lat` / `start_lon` /
+    `stop_lat` / `stop_lon` (the home address, in two decimal pairs, and
+    flatly incompatible with truncating the track). Nothing identifies the
+    owner: no name, no email, no user id — a shared ride is anonymous."""
+    ride = _merged_ride_dict(conn, row)
+    points, pauses = _merged_polyline_and_pauses(conn, row)
+    points, pauses, truncated = _truncate_track(points, pauses)
+    return {
+        "name": ride["name"],
+        "start_time": ride["start_time"],
+        "distance": ride["distance"],
+        "duration": ride["duration"],
+        "duration_without_pauses": ride["duration_without_pauses"],
+        "total_pauses_duration": ride["total_pauses_duration"],
+        "pause_count": ride["pause_count"],
+        "maximum_altitude": ride["maximum_altitude"],
+        "vehicle_brand": ride["vehicle_brand"],
+        "vehicle_model": ride["vehicle_model"],
+        # One encoded string for the whole merge group, re-encoded after
+        # truncation — same wire format the private detail endpoint uses,
+        # so the client decodes it with the same code.
+        "polyline": [polyline_lib.encode(points)] if points else [],
+        "pauses": [{"lat": p["lat"], "lon": p["lon"], "automatic": p["automatic"]} for p in pauses],
+        "timeline": _merged_ride_timeline(conn, row),
+        "track_truncated": truncated,
+    }
+
+
+def _get_shared_ride(conn, token: str):
+    """The public counterpart of `_get_owned_ride` — resolves a ride by
+    active share token, never by id and never scoped by user. Unknown,
+    revoked and expired tokens are all the same 404 with the same body: a
+    distinct status (410, say) would confirm that a token once existed."""
+    share = db.get_share_by_token(conn, token)
+    if not share:
+        raise HTTPException(status_code=404, detail="Not found")
+    row = conn.execute("SELECT * FROM rides WHERE id = ?", (share["ride_id"],)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    return row
+
+
+@app.post("/api/rides/{ride_id}/share")
+def api_share_ride(ride_id: str, req: ShareRequest, request: Request, user=Depends(get_session_user)):
+    """Opts one ride into a public link. Nothing is public until this is
+    called, one ride at a time. `regenerate: true` mints a new token and
+    kills the current one — including for everyone it was already sent to."""
+    conn = db.connect()
+    try:
+        _get_owned_ride(conn, ride_id, user["id"])
+        if req.regenerate:
+            share = db.regenerate_ride_share(conn, user["id"], ride_id)
+        else:
+            share = db.get_or_create_ride_share(conn, user["id"], ride_id)
+        return _share_view(request, share)
+    finally:
+        conn.close()
+
+
+@app.delete("/api/rides/{ride_id}/share")
+def api_unshare_ride(ride_id: str, user=Depends(get_session_user)):
+    """Takes the public link down. Idempotent — `revoked` says whether
+    there was anything live to take down."""
+    conn = db.connect()
+    try:
+        _get_owned_ride(conn, ride_id, user["id"])
+        return {"revoked": db.revoke_ride_share(conn, ride_id)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/public/rides/{token}")
+def api_public_ride(token: str, response: Response):
+    """No session, no cookie, no user — the token is the whole
+    authorization. Feeds static/share.js."""
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    conn = db.connect()
+    try:
+        return _public_ride_dict(conn, _get_shared_ride(conn, token))
     finally:
         conn.close()
 
@@ -1655,6 +1861,89 @@ def api_export_tag_gpx(tag_id: int, user=Depends(get_session_user)):
         return _gpx_response(_build_gpx(conn, ride_rows), tag["name"] or "tag")
     finally:
         conn.close()
+
+
+MONTHS_FR = (
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+)
+
+# Headers the public page carries that the rest of the app doesn't need.
+# `no-referrer` is the important one: without it the share token travels in
+# the Referer header of every OpenStreetMap tile request the page makes,
+# handing a third party the very URL the owner chose who to send it to.
+PUBLIC_PAGE_HEADERS = {
+    "Referrer-Policy": "no-referrer",
+    "X-Robots-Tag": "noindex, nofollow",
+}
+
+
+def _share_og_summary(ride: dict) -> tuple[str, str]:
+    """(title, description) for the link preview a messaging app renders —
+    the reason `/t/{token}` serves HTML of its own instead of the same
+    static file for every token. Built from the same allow-listed payload
+    the visitor gets, so nothing can leak through the preview that the page
+    itself wouldn't show."""
+    try:
+        start = parse_iso(ride["start_time"])
+        date = f"{start.day} {MONTHS_FR[start.month - 1]} {start.year}"
+    except (ValueError, TypeError, KeyError):
+        date = ""
+    km = f"{(ride['distance'] or 0) / 1000:.1f}".replace(".", ",")
+    hours, minutes = divmod(round((ride["duration"] or 0) / 60), 60)
+    duration = f"{hours}h{minutes:02d}" if hours else f"{minutes}min"
+    title = ride["name"] or date or "Trajet"
+    return title, " · ".join(p for p in (date, f"{km} km", duration) if p)
+
+
+def _render_share_page(title: str, description: str, url: str) -> str:
+    """Injects the preview metadata into static/share.html. A str.replace
+    on a placeholder rather than a template engine — this is the only page
+    in the app that needs it, and it isn't worth a dependency."""
+    def attr(value: str) -> str:
+        return html.escape(value, quote=True)
+
+    meta = f"""<title>{attr(title)} — Carnet de Route</title>
+<meta name="description" content="{attr(description)}" />
+<meta property="og:type" content="article" />
+<meta property="og:site_name" content="Carnet de Route" />
+<meta property="og:title" content="{attr(title)}" />
+<meta property="og:description" content="{attr(description)}" />
+<meta property="og:url" content="{attr(url)}" />
+<meta name="twitter:card" content="summary" />"""
+    return (STATIC / "share.html").read_text(encoding="utf-8").replace("<!--HEAD_META-->", meta)
+
+
+@app.get("/t/{token}")
+def public_share_page(token: str, request: Request):
+    """The public page itself. Always 200, even on a dead token: someone
+    opening an old link from a chat thread deserves a sentence in French,
+    not a raw error — and since unknown and revoked tokens produce the same
+    page, it confirms nothing either way. The ride data arrives separately
+    from /api/public/rides/{token}, which is where the 404 lives."""
+    conn = db.connect()
+    try:
+        share = db.get_share_by_token(conn, token)
+        row = None
+        if share:
+            row = conn.execute("SELECT * FROM rides WHERE id = ?", (share["ride_id"],)).fetchone()
+        if row is not None:
+            title, description = _share_og_summary(_public_ride_dict(conn, row))
+        else:
+            title, description = "Lien introuvable", "Ce lien de partage n'est plus actif."
+    finally:
+        conn.close()
+    page = _render_share_page(title, description, _share_url(request, token))
+    return HTMLResponse(page, headers=PUBLIC_PAGE_HEADERS)
+
+
+@app.get("/robots.txt")
+def robots_txt():
+    """Share links are unlisted, not secret-by-obscurity — but they have no
+    business in a search index either. Disallowing the prefix reveals
+    nothing (there is no token in it) and covers crawlers that fetch a URL
+    before reading its meta tags."""
+    return RawResponse("User-agent: *\nDisallow: /t/\nDisallow: /api/\n", media_type="text/plain")
 
 
 @app.get("/")
