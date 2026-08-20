@@ -1,10 +1,9 @@
 import sqlite3
 
 import pytest
-from conftest import insert_returning_id, table_names, make_ride
+from conftest import insert_returning_id, make_ride, table_names
 
 import db as db_module
-
 
 # Whichever driver is under the test, a constraint violation must raise.
 if db_module.IS_POSTGRES:

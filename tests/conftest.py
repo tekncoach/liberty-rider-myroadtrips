@@ -15,7 +15,6 @@ from fastapi.testclient import TestClient
 
 import db as db_module
 
-
 # Tables that must survive between tests: the migration ledger, or every
 # test would replay the whole Postgres migration history.
 _KEEP_TABLES = {"schema_migrations"}
@@ -40,7 +39,7 @@ def _reset_postgres() -> None:
         names = [r["tablename"] for r in rows if r["tablename"] not in _KEEP_TABLES]
         if names:
             # Table names come from the catalogue, never from a test.
-            conn.execute(  # noqa: S608
+            conn.execute(
                 f"TRUNCATE {', '.join(names)} RESTART IDENTITY CASCADE"
             )
             conn.commit()
