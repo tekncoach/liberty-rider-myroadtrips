@@ -9,7 +9,7 @@ import db as db_module
 if db_module.IS_POSTGRES:
     import psycopg
 
-    INTEGRITY_ERRORS = psycopg.errors.IntegrityError
+    INTEGRITY_ERRORS: type[Exception] = psycopg.errors.IntegrityError
 else:
     INTEGRITY_ERRORS = sqlite3.IntegrityError
 

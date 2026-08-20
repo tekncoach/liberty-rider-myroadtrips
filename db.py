@@ -51,6 +51,12 @@ if IS_POSTGRES:
     # e.g.), where each fresh connection pays a full TCP+TLS+auth
     # handshake through an extra network hop. A small persistent pool
     # amortizes that cost across requests instead of paying it every time.
+    # IS_POSTGRES is exactly "DATABASE_URL is set", but that doesn't survive
+    # across module scope for a type checker. A real check rather than an
+    # assert: asserts vanish under `python -O`, and this one guards the
+    # connection string of the production database.
+    if DATABASE_URL is None:  # pragma: no cover — unreachable while IS_POSTGRES
+        raise RuntimeError("DATABASE_URL disappeared between import and pool creation")
     _POOL = ConnectionPool(DATABASE_URL, kwargs={"row_factory": dict_row}, min_size=1, max_size=5)
 
 
@@ -265,6 +271,11 @@ class PGConnection:
             self._conn = _pooled_conn
             self._pooled = True
         else:
+            # Only ever constructed without a pooled connection when a URL
+            # was passed; making that explicit rather than letting psycopg
+            # fail on None deeper down.
+            if url is None:
+                raise ValueError("PGConnection needs a URL when no pooled connection is given")
             self._conn = psycopg.connect(url, row_factory=dict_row, autocommit=False)
             self._pooled = False
 
