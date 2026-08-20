@@ -37,6 +37,16 @@ from liberty_client import LibertyRiderClient
 from utils import day_key, haversine_km, parse_iso
 
 logger = logging.getLogger("carnet")
+# Under uvicorn nothing configures the root logger, so logger.info() went
+# nowhere — including the startup line that says whether token encryption is
+# active, which docs/TOKEN-ENCRYPTION.md tells you to check. Own handler,
+# level from LOG_LEVEL (default INFO).
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_handler)
+    logger.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
+    logger.propagate = False
 
 ROOT = pathlib.Path(__file__).parent
 STATIC = ROOT / "static"
