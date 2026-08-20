@@ -320,3 +320,13 @@ def test_login_failure_tracking_does_not_grow_without_bound(client, app_module, 
     monkeypatch.setattr(app_module.time, "monotonic", lambda: 10_000_000.0)
     app_module._check_login_throttle(["email:someone@example.com"])
     assert app_module._login_failures == {}
+
+
+def test_log_values_cannot_forge_journal_entries(app_module):
+    """CodeQL alert #1 (py/log-injection) — a newline in an email address
+    would otherwise let the caller write whole fake log lines."""
+    forged = "victim@example.com\nAug 20 21:00 sudo: root granted"
+    safe = app_module._log_safe(forged)
+    assert "\n" not in safe
+    assert "sudo" in safe.replace("_", " "), "the text is neutralised, not dropped"
+    assert len(app_module._log_safe("x" * 500)) <= 120

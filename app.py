@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -152,6 +153,15 @@ db.init_db()
 
 
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+# Anything outside this set is replaced before a user-supplied value reaches
+# a log line: a newline in an email address would otherwise let the caller
+# forge whole journal entries (CodeQL py/log-injection, alert #1).
+_LOG_UNSAFE = re.compile(r"[^A-Za-z0-9@._+-]")
+
+
+def _log_safe(value: str, limit: int = 120) -> str:
+    return _LOG_UNSAFE.sub("_", str(value))[:limit]
 
 
 def _is_cross_site(request) -> bool:
@@ -857,7 +867,7 @@ def api_login(req: LoginRequest, response: Response, request: Request):
         tokens = sign_in_with_password(req.email, req.password, FIREBASE_API_KEY)
     except requests.HTTPError as e:
         _record_login_failure(throttle_keys)
-        logger.warning("login failed for %s", req.email)
+        logger.warning("login failed for %s", _log_safe(req.email))
         # Firebase's own message distinguishes EMAIL_NOT_FOUND from
         # INVALID_PASSWORD; relaying it turned this endpoint into an account
         # enumeration oracle for Liberty Rider accounts. One generic answer.
