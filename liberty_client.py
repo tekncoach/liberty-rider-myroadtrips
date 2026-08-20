@@ -5,9 +5,12 @@ but targets `currentUser.stoppedRides` instead.
 """
 from __future__ import annotations
 
+import logging
 import time
 
 import requests
+
+logger = logging.getLogger("carnet.liberty")
 
 API_URL = "https://api.liberty-rider.com/graphql"
 
@@ -140,7 +143,7 @@ class LibertyRiderClient:
         if "errors" in data:
             # Partial failure (e.g. a transient 502 re-deriving one field on one
             # ride) — the rest of the page is still usable, so just warn.
-            print(f"[liberty_client] partial GraphQL errors: {data['errors']}")
+            logger.warning("partial GraphQL errors: %s", data["errors"])
         return data["data"]["currentUser"]
 
     def get_current_user(self) -> dict:
@@ -172,7 +175,11 @@ class LibertyRiderClient:
         # whatever came back instead of assuming a single-element list.
         return max(rides, key=lambda ride: ride["startTime"] or "")
 
-    def download_gpx(self, gpx_export_url: str) -> bytes:
-        resp = self.session.get(gpx_export_url, timeout=30)
-        resp.raise_for_status()
-        return resp.content
+    # download_gpx() used to live here: it GET'd a URL handed to us by the
+    # Liberty Rider API with this session's `Authorization: Bearer <user
+    # token>` header still attached, so a hostile or compromised URL in that
+    # payload would have exfiltrated the user's token (or reached an
+    # internal address). Nothing called it — the app builds GPX itself from
+    # stored polylines — so it is gone rather than guarded. If it ever comes
+    # back: a separate unauthenticated session, and an allowlist on the
+    # URL's host.

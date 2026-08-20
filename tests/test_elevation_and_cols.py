@@ -11,11 +11,11 @@ from __future__ import annotations
 import polyline as polyline_lib
 import pytest
 import requests
+from conftest import make_ride
 
 import db as db_module
 import elevation as elevation_module
 import mountain_pass as mountain_pass_module
-from conftest import make_ride
 
 
 @pytest.fixture

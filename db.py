@@ -29,7 +29,7 @@ import os
 import pathlib
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 
 DB_PATH = pathlib.Path(__file__).parent / "data" / "rides.db"
 MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
@@ -50,11 +50,17 @@ if IS_POSTGRES:
     _POOL = ConnectionPool(DATABASE_URL, kwargs={"row_factory": dict_row}, min_size=1, max_size=5)
 
 
-def _now() -> str:
+def _now(offset_days: int = 0) -> str:
     """A portable stand-in for SQLite's `datetime('now')` — Postgres has no
     such function, so the timestamp is computed here and bound as a plain
-    parameter instead of relying on server-side SQL."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    parameter instead of relying on server-side SQL. `offset_days` shifts it
+    into the future (session deadlines)."""
+    return (datetime.now(UTC) + timedelta(days=offset_days)).strftime("%Y-%m-%d %H:%M:%S")
+
+# Sessions used to live forever server-side: the cookie carried a 30-day
+# Max-Age, but that is a browser-side courtesy — a stolen session id stayed
+# valid indefinitely. The server now owns the deadline.
+SESSION_TTL_DAYS = 30
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -70,7 +76,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  expires_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS rides (
@@ -307,6 +314,17 @@ def init_db() -> None:
 
         _migrate_tags_table(conn)
         _migrate_sync_state_table(conn)
+
+        sessions_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
+        if "expires_at" not in sessions_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
+        # Backfilled from created_at rather than left NULL: a NULL row would
+        # be accepted forever by get_session_user() and skipped by
+        # delete_expired_sessions(), i.e. an immortal session.
+        conn.execute(
+            f"UPDATE sessions SET expires_at = datetime(created_at, '+{SESSION_TTL_DAYS} days') "
+            "WHERE expires_at IS NULL"
+        )
 
         conn.executescript(POST_MIGRATION_INDEXES)
         conn.commit()
@@ -558,22 +576,60 @@ def save_user_tokens(conn: DBConnection, user_id: str, bearer_token: str, refres
 def create_session(conn: DBConnection, user_id: str) -> str:
     session_id = secrets.token_urlsafe(32)
     conn.execute(
-        "INSERT INTO sessions (id, user_id, created_at) VALUES (?, ?, ?)",
-        (session_id, user_id, _now()),
+        "INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (session_id, user_id, _now(), _now(offset_days=SESSION_TTL_DAYS)),
     )
     conn.commit()
     return session_id
 
 
 def get_session_user(conn: DBConnection, session_id: str):
+    """A NULL expires_at is accepted as a last-resort safety net only —
+    init_db() backfills those rows from created_at, so in practice none
+    remain. Without the backfill such a row would be both immortal here and
+    invisible to delete_expired_sessions()."""
     return conn.execute(
-        "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?",
-        (session_id,),
+        "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id "
+        "WHERE s.id = ? AND (s.expires_at IS NULL OR s.expires_at > ?)",
+        (session_id, _now()),
     ).fetchone()
 
 
 def delete_session(conn: DBConnection, session_id: str) -> None:
     conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    conn.commit()
+
+
+def has_active_session(conn: DBConnection, user_id: str) -> bool:
+    """Whether this account still has a session somewhere — what tells a
+    logout on one device apart from the account's last logout."""
+    row = conn.execute(
+        "SELECT 1 AS one FROM sessions WHERE user_id = ? "
+        "AND (expires_at IS NULL OR expires_at > ?) LIMIT 1",
+        (user_id, _now()),
+    ).fetchone()
+    return row is not None
+
+
+def delete_user_sessions(conn: DBConnection, user_id: str) -> None:
+    """Every session of one account — "log me out everywhere"."""
+    conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+
+def delete_expired_sessions(conn: DBConnection) -> int:
+    """Called at startup and on every login — the table would otherwise grow
+    without bound, since nothing else ever removes a row."""
+    cur = conn.execute("DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at <= ?", (_now(),))
+    conn.commit()
+    return cur.rowcount or 0
+
+
+def clear_refresh_token(conn: DBConnection, user_id: str) -> None:
+    """Drop the Firebase refresh token at logout. It doesn't expire on its
+    own and can mint Liberty Rider tokens indefinitely, so keeping it for an
+    account that just logged out is pure liability."""
+    conn.execute("UPDATE users SET refresh_token = NULL, bearer_token = NULL WHERE id = ?", (user_id,))
     conn.commit()
 
 

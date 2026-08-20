@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -44,7 +44,7 @@ def test_haversine_km_none_if_any_coord_missing(args):
 
 def test_parse_iso_handles_z_suffix():
     dt = parse_iso("2024-06-15T10:30:00Z")
-    assert dt == datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc)
+    assert dt == datetime(2024, 6, 15, 10, 30, 0, tzinfo=UTC)
 
 
 def test_parse_iso_handles_explicit_offset():

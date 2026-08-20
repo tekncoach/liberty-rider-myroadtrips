@@ -1,7 +1,8 @@
 """GET /api/admin/stats — maintainer-only dashboard (gated on
 ADMIN_USER_IDS): per-account activity plus overall totals."""
-import db as db_module
 from conftest import make_ride
+
+import db as db_module
 
 
 def _seed_ride(user_id, ride_id, start_time, **kw):

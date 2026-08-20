@@ -1,0 +1,68 @@
+# Hardened systemd unit for the FastAPI service (finding VM-01/VM-03).
+#
+# NOT applied automatically — this is the reference the live VM should be
+# brought in line with. Install with:
+#
+#   sudo cp deploy/roadtrips.service /etc/systemd/system/roadtrips.service
+#   sudo systemctl daemon-reload && sudo systemctl restart roadtrips
+#   systemd-analyze security roadtrips     # audited at 9.2 UNSAFE before this
+#
+# Prerequisites, in this order, or the service will not start:
+#   1. a dedicated unprivileged user:  sudo adduser --system --group roadtrips
+#      (the service must NOT run as an account holding sudo NOPASSWD:ALL)
+#   2. a non-superuser Postgres role, and DATABASE_URL pointing at it
+#   3. /etc/roadtrips.env readable only by root (0600), holding the env vars
+
+[Unit]
+Description=Carnet de Route (Liberty Rider sync)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=roadtrips
+Group=roadtrips
+WorkingDirectory=/opt/roadtrips
+EnvironmentFile=/etc/roadtrips.env
+
+# Bound to loopback: the only legitimate path in is the reverse proxy, and
+# the provider's NAT is not a firewall we control. --forwarded-allow-ips
+# must name the proxy, otherwise a client could forge its source IP and walk
+# around the per-IP login throttle.
+ExecStart=/opt/roadtrips/.venv/bin/uvicorn app:app \
+  --host 127.0.0.1 --port 8000 \
+  --forwarded-allow-ips=127.0.0.1 \
+  --header "server:carnet"
+
+Restart=on-failure
+RestartSec=5
+
+# --- sandboxing ---------------------------------------------------------
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+UMask=0077
+
+# ProtectSystem=strict makes everything read-only; name the exceptions.
+ReadWritePaths=/opt/roadtrips/data
+
+[Install]
+WantedBy=multi-user.target

@@ -8,3 +8,15 @@ __pycache__/
 .liberty_rider_firebase_api_key
 .env
 .DS_Store
+# SQLite ships -wal/-shm alongside the database itself, and a stray
+# `git add -A` must never sweep up real ride data or a dump.
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sql.gz
+*.dump
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.claude/

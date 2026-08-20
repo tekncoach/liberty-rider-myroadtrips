@@ -555,7 +555,7 @@ function renderUngroupedRow(r) {
   const mergeDirection = r.merge_candidate_prev_id ? "↓" : "↑";
   row.innerHTML = `
     <input type="checkbox" ${state.selected.has(r.id) ? "checked" : ""} />
-    ${r.preview_picture_url ? `<img class="ride-thumb" loading="lazy" src="${r.preview_picture_url}" alt="" />` : ""}
+    ${r.preview_picture_url ? `<img class="ride-thumb" loading="lazy" src="${escapeHtml(r.preview_picture_url)}" alt="" />` : ""}
     <div class="ride-body">
       <div class="name">${escapeHtml(r.name || fmtDate(r.start_time))}</div>
       <div class="meta">${fmtDate(r.start_time)} → ${fmtTime(new Date(new Date(r.start_time).getTime() + (r.duration || 0) * 1000))} · ${fmtKm(r.distance)} · ${fmtDuration(r.duration)}</div>
@@ -817,7 +817,7 @@ async function showTripDetail(id) {
   try {
     trip = await api(`/api/roadtrips/${id}`);
   } catch (e) {
-    if (requestId === latestDetailRequest) main.innerHTML = `<div id="empty">Erreur : ${e.message}</div>`;
+    if (requestId === latestDetailRequest) main.innerHTML = `<div id="empty">Erreur : ${escapeHtml(e.message)}</div>`;
     return;
   }
   if (requestId !== latestDetailRequest) return; // a newer click already superseded this one
@@ -877,7 +877,7 @@ async function showTagDetail(id) {
   try {
     tag = await api(`/api/tags/${id}`);
   } catch (e) {
-    if (requestId === latestDetailRequest) main.innerHTML = `<div id="empty">Erreur : ${e.message}</div>`;
+    if (requestId === latestDetailRequest) main.innerHTML = `<div id="empty">Erreur : ${escapeHtml(e.message)}</div>`;
     return;
   }
   if (requestId !== latestDetailRequest) return; // a newer click already superseded this one
@@ -1369,8 +1369,11 @@ async function renderElevationChart(rideId) {
     const colMarkers = cols.map((c) => {
       const cx = x(c.distance_km);
       const cy = y(c.elevation);
+      // c.name is an OpenStreetMap `name` tag — anyone can edit it, and it
+      // is persisted in ride_cols and replayed on every open, so it is
+      // hostile data going into an HTML attribute.
       return `<polygon class="elevation-col-marker" points="${cx},${cy - 9} ${cx - 4},${cy - 2} ${cx + 4},${cy - 2}"
-         data-tooltip="${c.name} — ${Math.round(c.elevation)} m — ${c.distance_km.toFixed(1)} km"
+         data-tooltip="${escapeHtml(c.name)} — ${Math.round(c.elevation)} m — ${c.distance_km.toFixed(1)} km"
          data-lat="${c.lat}" data-lon="${c.lon}"></polygon>`;
     }).join("");
     svg.insertAdjacentHTML("beforeend", colMarkers);

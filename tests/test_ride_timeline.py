@@ -8,9 +8,9 @@ Both are exercised at two levels:
   was built to fix — a member ride's dangling unresolved pause must not be
   "closed" by an unrelated resume belonging to a different member's pause.
 """
-import db as db_module
 from conftest import make_event, make_ride
 
+import db as db_module
 
 # --- _ride_own_timeline (unit) ----------------------------------------------
 

@@ -9,20 +9,23 @@ firebase_refresh.py. There is no other login path.
 """
 from __future__ import annotations
 
+import logging
 import os
 import pathlib
+import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from urllib.parse import urlparse
 
 import gpxpy
 import gpxpy.gpx
 import polyline as polyline_lib
 import requests
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
-from fastapi.responses import FileResponse
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.responses import Response as RawResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import db
 import elevation
@@ -31,6 +34,8 @@ import sync as sync_module
 from firebase_refresh import refresh_id_token, sign_in_with_password
 from liberty_client import LibertyRiderClient
 from utils import day_key, haversine_km, parse_iso
+
+logger = logging.getLogger("carnet")
 
 ROOT = pathlib.Path(__file__).parent
 STATIC = ROOT / "static"
@@ -49,9 +54,26 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"
 # maintainer-only tools (currently: purging one's own synced data to
 # re-test onboarding) — not a feature end users are meant to see or use.
 ADMIN_USER_IDS = {u.strip() for u in os.environ.get("ADMIN_USER_IDS", "").split(",") if u.strip()}
+# Exact origin allowed to send mutating requests, e.g.
+# "https://liberty-rider-myroadtrips.exe.xyz". Unset (the default) falls back
+# to comparing hosts — see _is_cross_site().
+ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "").strip()
+
+def _purge_expired_sessions_at_startup() -> None:
+    """Nothing else removes an expired row on a long-running server between
+    logins, so the table is swept once on boot too."""
+    conn = db.connect()
+    try:
+        purged = db.delete_expired_sessions(conn)
+        if purged:
+            logger.info("purged %s expired session(s) at startup", purged)
+    finally:
+        conn.close()
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    _purge_expired_sessions_at_startup()
     # Not `yield`ed to for TestClient(app) used without a `with` block
     # (every test fixture here) — db.init_db() below still runs eagerly
     # at import time so tests are unaffected; this only handles a clean
@@ -61,8 +83,83 @@ async def _lifespan(app: FastAPI):
         db._POOL.close()
 
 
-app = FastAPI(title="Carnet de Route (Liberty Rider sync)", lifespan=_lifespan)
+# The interactive API docs publish the whole endpoint surface (including the
+# maintainer-only ones) to anonymous visitors. Useful locally, pointless in
+# production — set EXPOSE_API_DOCS=1 to opt back in.
+EXPOSE_API_DOCS = os.environ.get("EXPOSE_API_DOCS") == "1" or not COOKIE_SECURE
+
+# Everything this frontend loads: Leaflet from unpkg (pinned + SRI, see
+# static/index.html), OSM/Liberty Rider map tiles as images, and its own
+# API. `style-src 'unsafe-inline'` is still needed because index.html
+# carries its whole stylesheet in a <style> block — moving it to a served
+# .css file is what would let that last exception go.
+CSP = (
+    "default-src 'self'; "
+    "script-src 'self' https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+    "img-src 'self' data: https://*.tile.openstreetmap.org https://tiles.liberty-rider.com; "
+    "connect-src 'self'; "
+    "font-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+SECURITY_HEADERS = {
+    "Content-Security-Policy": CSP,
+    "X-Content-Type-Options": "nosniff",
+    # Belt and braces with the CSP's frame-ancestors, for older browsers.
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "geolocation=(), camera=(), microphone=(), interest-cohort=()",
+}
+
+app = FastAPI(
+    title="Carnet de Route (Liberty Rider sync)",
+    lifespan=_lifespan,
+    docs_url="/docs" if EXPOSE_API_DOCS else None,
+    redoc_url="/redoc" if EXPOSE_API_DOCS else None,
+    openapi_url="/openapi.json" if EXPOSE_API_DOCS else None,
+)
 db.init_db()
+
+
+MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _is_cross_site(request) -> bool:
+    """True when a browser tells us this mutating request came from another
+    origin. `SameSite=lax` already keeps the session cookie off cross-site
+    POSTs, but that's a browser default we inherit rather than a decision we
+    made — this is the explicit half. Requests with no Origin at all (curl,
+    the test client, non-browser callers) are left alone: the header is a
+    browser signal, not an authentication mechanism.
+
+    Only the host is compared, never the scheme: behind a TLS-terminating
+    proxy the request's own scheme depends on X-Forwarded-Proto, and a proxy
+    that stopped forwarding it would turn every write into a 403. Set
+    ALLOWED_ORIGIN to compare the full origin instead."""
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    if ALLOWED_ORIGIN:
+        return origin != ALLOWED_ORIGIN
+    return urlparse(origin).netloc != request.headers.get("host", "")
+
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    """Baseline security headers on every response. HSTS and the HTTP→HTTPS
+    redirect come from the reverse proxy, so they're deliberately not set
+    here (setting HSTS on a plain-HTTP dev server would be a footgun)."""
+    if request.method in MUTATING_METHODS and _is_cross_site(request):
+        response = JSONResponse(status_code=403, content={"detail": "Cross-site request rejected"})
+    else:
+        response = await call_next(request)
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
 
 
 # --- auth plumbing -----------------------------------------------------
@@ -169,10 +266,11 @@ def _raw_resumes(conn, ride_id: str) -> list[dict]:
     ]
 
 
-def _merge_members(conn, ride_id: str):
+def _merge_members(conn, ride_id: str, user_id: str):
     """Raw rows absorbed into `ride_id` via a merge (empty if none)."""
     return conn.execute(
-        "SELECT * FROM rides WHERE merged_into = ? ORDER BY start_time", (ride_id,)
+        "SELECT * FROM rides WHERE merged_into = ? AND user_id = ? ORDER BY start_time",
+        (ride_id, user_id),
     ).fetchall()
 
 
@@ -195,7 +293,7 @@ def _merge_group(conn, row, members_map=None) -> list:
     `[row]` if it isn't merged with anything. Pass `members_map` (from
     `_merge_members_map`) when processing many rides in one request to
     avoid a separate query per ride."""
-    members = members_map.get(row["id"], []) if members_map is not None else _merge_members(conn, row["id"])
+    members = members_map.get(row["id"], []) if members_map is not None else _merge_members(conn, row["id"], row["user_id"])
     if not members:
         return [row]
     return sorted([row, *members], key=lambda r: r["start_time"])
@@ -212,6 +310,7 @@ def _merged_ride_dict(conn, row, members_map=None) -> dict:
         return base
 
     from datetime import timedelta
+
     from utils import parse_iso
 
     first, last = group[0], group[-1]
@@ -619,60 +718,130 @@ class SyncRequest(BaseModel):
     full: bool = False
 
 
+# Nothing here was bounded before: a 200k-character roadtrip name was
+# accepted and stored verbatim. These caps are generous for real use (a
+# roadtrip name is a few words, a note a few paragraphs) and only exist to
+# stop a client from bloating the database or the rendered page.
+MAX_PEAK_LOOKUPS = 12
+NAME_MAX = 200
+NOTES_MAX = 10_000
+RIDE_IDS_MAX = 1_000
+
+
 class CreateRoadtripRequest(BaseModel):
-    name: str
-    ride_ids: list[str] = []
+    name: str = Field(max_length=NAME_MAX)
+    ride_ids: list[str] = Field(default=[], max_length=RIDE_IDS_MAX)
 
 
 class AttachTagRequest(BaseModel):
-    name: str
+    name: str = Field(max_length=NAME_MAX)
 
 
 class SetNotesRequest(BaseModel):
-    notes: str
+    notes: str = Field(max_length=NOTES_MAX)
 
 
 class RenameTagRequest(BaseModel):
-    name: str
+    name: str = Field(max_length=NAME_MAX)
 
 
 class RenameRoadtripRequest(BaseModel):
-    name: str
+    name: str = Field(max_length=NAME_MAX)
 
 
 class AddRidesRequest(BaseModel):
-    ride_ids: list[str]
+    ride_ids: list[str] = Field(max_length=RIDE_IDS_MAX)
 
 
 class MergeRidesRequest(BaseModel):
-    ride_ids: list[str]
+    ride_ids: list[str] = Field(max_length=RIDE_IDS_MAX)
 
 
 # --- auth ---------------------------------------------------------------
 
+# Failed-login throttling (finding APP-02). Deliberately in-process: the
+# service runs a single uvicorn worker, and a dict is honest about that —
+# a database counter would only look distributed while sharing the same
+# single process. Revisit if the deployment ever grows workers.
+LOGIN_MAX_FAILURES = 5
+LOGIN_WINDOW_S = 15 * 60
+_login_failures: dict[str, list[float]] = {}
+_last_sweep = 0.0
+
+
+def _sweep_login_failures(now: float) -> None:
+    """Drop every key whose failures have all aged out. Without this, only
+    the key being looked at was ever pruned — so spraying N distinct emails
+    left N entries behind, i.e. unbounded memory growth in the very thing
+    meant to absorb a flood."""
+    global _last_sweep
+    if now - _last_sweep < LOGIN_WINDOW_S:
+        return
+    _last_sweep = now
+    for key in list(_login_failures):
+        if all(now - t >= LOGIN_WINDOW_S for t in _login_failures[key]):
+            del _login_failures[key]
+
+
+def _recent_failures(key: str, now: float) -> list[float]:
+    fails = [t for t in _login_failures.get(key, []) if now - t < LOGIN_WINDOW_S]
+    if fails:
+        _login_failures[key] = fails
+    else:
+        _login_failures.pop(key, None)
+    return fails
+
+
+def _login_throttle_keys(req_email: str, request) -> list[str]:
+    """Throttled per email *and* per client IP: per-email alone lets one
+    host spray many accounts, per-IP alone lets a botnet grind one account."""
+    client_ip = request.client.host if request.client else "unknown"
+    return [f"email:{req_email.strip().lower()}", f"ip:{client_ip}"]
+
+
+def _check_login_throttle(keys: list[str]) -> None:
+    now = time.monotonic()
+    _sweep_login_failures(now)
+    for key in keys:
+        if len(_recent_failures(key, now)) >= LOGIN_MAX_FAILURES:
+            raise HTTPException(
+                status_code=429,
+                detail="Trop de tentatives de connexion. Réessaie dans quelques minutes.",
+            )
+
+
+def _record_login_failure(keys: list[str]) -> None:
+    now = time.monotonic()
+    for key in keys:
+        _login_failures.setdefault(key, []).append(now)
+
+
 @app.post("/api/auth/login")
-def api_login(req: LoginRequest, response: Response):
+def api_login(req: LoginRequest, response: Response, request: Request):
     if not FIREBASE_API_KEY:
         raise HTTPException(
             status_code=500,
             detail="Server misconfigured: LIBERTY_RIDER_FIREBASE_API_KEY isn't set.",
         )
+    throttle_keys = _login_throttle_keys(req.email, request)
+    # Checked before the outbound call, so a flood costs us nothing and
+    # doesn't hammer Firebase from this server's IP either.
+    _check_login_throttle(throttle_keys)
     try:
         tokens = sign_in_with_password(req.email, req.password, FIREBASE_API_KEY)
     except requests.HTTPError as e:
-        message = "Login failed"
-        if e.response is not None:
-            try:
-                message = e.response.json().get("error", {}).get("message", message)
-            except ValueError:
-                pass
-        raise HTTPException(status_code=401, detail=message)
+        _record_login_failure(throttle_keys)
+        logger.warning("login failed for %s", req.email)
+        # Firebase's own message distinguishes EMAIL_NOT_FOUND from
+        # INVALID_PASSWORD; relaying it turned this endpoint into an account
+        # enumeration oracle for Liberty Rider accounts. One generic answer.
+        raise HTTPException(status_code=401, detail="Identifiants invalides") from e
 
     client = LibertyRiderClient(tokens["id_token"])
     try:
         lr_user = client.get_current_user()
     except requests.exceptions.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}") from e
 
     conn = db.connect()
     try:
@@ -680,6 +849,9 @@ def api_login(req: LoginRequest, response: Response):
         db.upsert_user(conn, user_id, lr_user.get("firstName"), req.email)
         db.save_user_tokens(conn, user_id, tokens["id_token"], tokens["refresh_token"], FIREBASE_API_KEY)
         db.claim_orphaned_data(conn, user_id)
+        # Cheap, and login is the one moment where one more query is free —
+        # otherwise nothing ever removes an expired row (R-3).
+        db.delete_expired_sessions(conn)
         session_id = db.create_session(conn, user_id)
     finally:
         conn.close()
@@ -695,9 +867,36 @@ def api_logout(response: Response, session_id: str | None = Cookie(default=None,
     if session_id:
         conn = db.connect()
         try:
+            user = db.get_session_user(conn, session_id)
             db.delete_session(conn, session_id)
+            # The Firebase refresh token never expires on its own and can
+            # mint Liberty Rider tokens indefinitely, so it shouldn't outlive
+            # the account's last session (APP-01) — but clearing it while
+            # another device is still logged in would break that device's
+            # sync with "No Liberty Rider token on file". Hence: only once
+            # nobody is left.
+            if user and not db.has_active_session(conn, user["id"]):
+                db.clear_refresh_token(conn, user["id"])
+            if user:
+                logger.info("logout for user %s", user["id"])
         finally:
             conn.close()
+    response.delete_cookie(SESSION_COOKIE)
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout-all")
+def api_logout_everywhere(response: Response, user=Depends(get_session_user)):
+    """Drop every session of this account, everywhere, and the stored
+    Liberty Rider tokens with them — the "someone else has my session"
+    button. Plain logout deliberately leaves other devices alone."""
+    conn = db.connect()
+    try:
+        db.delete_user_sessions(conn, user["id"])
+        db.clear_refresh_token(conn, user["id"])
+        logger.info("logout-all for user %s", user["id"])
+    finally:
+        conn.close()
     response.delete_cookie(SESSION_COOKIE)
     return {"ok": True}
 
@@ -723,7 +922,7 @@ def api_auth_profile(user=Depends(get_session_user)):
         client = _live_client_for(conn, user)
         lr_user = client.get_current_user()
     except requests.exceptions.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}") from e
     finally:
         conn.close()
     return {"first_name": lr_user.get("firstName") or user["first_name"], "manual_ride_count": lr_user.get("manualRideCount")}
@@ -790,10 +989,10 @@ def api_sync(req: SyncRequest, user=Depends(get_session_user)):
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
-            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.")
-        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.") from e
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}") from e
     except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e
     return summary
 
 
@@ -816,10 +1015,10 @@ def api_sync_status(user=Depends(get_session_user)):
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
         if status in (401, 403):
-            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.")
-        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}")
+            raise HTTPException(status_code=401, detail="Token expired or invalid — log in again.") from e
+        raise HTTPException(status_code=502, detail=f"Liberty Rider API error: {e}") from e
     except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 # --- rides ------------------------------------------------------------
@@ -975,7 +1174,12 @@ def api_ride_cols(ride_id: str, user=Depends(get_session_user)):
         # noise on the chart, so unnamed detections are silently dropped.
         valid_pauses = [p for p in pauses if p.get("lat") is not None and p.get("lon") is not None]
         cols = []
-        for i in _detect_peaks(profile):
+        # One Overpass round-trip (15s timeout) per candidate peak, on a
+        # single worker: an unusually jagged track could otherwise tie up the
+        # server for minutes and get its IP throttled by Overpass. A long
+        # ride realistically crosses a handful of named passes, so the cap
+        # only ever bites on pathological profiles.
+        for i in _detect_peaks(profile)[:MAX_PEAK_LOOKUPS]:
             (lat, lon), refined_elev = _refine_peak_point(conn, points, sample_idx, valid_pauses, i)
             name = mountain_pass.get_pass_name(conn, lat, lon, hint_elevation=refined_elev)
             if name:
@@ -1019,7 +1223,7 @@ def api_merge_rides(req: MergeRidesRequest, user=Depends(get_session_user)):
         for r in rows:
             if r["merged_into"] is not None:
                 raise HTTPException(status_code=400, detail=f"Ride {r['id']} is already part of a merge")
-            if _merge_members(conn, r["id"]):
+            if _merge_members(conn, r["id"], user["id"]):
                 raise HTTPException(status_code=400, detail=f"Ride {r['id']} already has rides merged into it")
             if _ride_tags(conn, r["id"]):
                 raise HTTPException(status_code=400, detail=f"Ride {r['id']} is tagged — untag it before merging")
@@ -1052,7 +1256,10 @@ def api_unmerge_ride(ride_id: str, user=Depends(get_session_user)):
     conn = db.connect()
     try:
         _get_owned_ride(conn, ride_id, user["id"])
-        conn.execute("UPDATE rides SET merged_into = NULL WHERE merged_into = ?", (ride_id,))
+        conn.execute(
+            "UPDATE rides SET merged_into = NULL WHERE merged_into = ? AND user_id = ?",
+            (ride_id, user["id"]),
+        )
         conn.commit()
         return {"ok": True}
     finally:
@@ -1196,7 +1403,8 @@ def api_roadtrip_detail(trip_id: int, user=Depends(get_session_user)):
     try:
         trip = _get_owned_roadtrip(conn, trip_id, user["id"])
         ride_rows = conn.execute(
-            "SELECT * FROM rides WHERE roadtrip_id = ? ORDER BY start_time", (trip_id,)
+            "SELECT * FROM rides WHERE roadtrip_id = ? AND user_id = ? ORDER BY start_time",
+            (trip_id, user["id"]),
         ).fetchall()
         members_map = _merge_members_map(conn, user["id"])
         rides = [_merged_ride_dict(conn, r, members_map) for r in ride_rows]
@@ -1250,7 +1458,10 @@ def api_delete_roadtrip(trip_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
         _get_owned_roadtrip(conn, trip_id, user["id"])
-        conn.execute("UPDATE rides SET roadtrip_id = NULL WHERE roadtrip_id = ?", (trip_id,))
+        conn.execute(
+            "UPDATE rides SET roadtrip_id = NULL WHERE roadtrip_id = ? AND user_id = ?",
+            (trip_id, user["id"]),
+        )
         conn.execute("DELETE FROM roadtrips WHERE id = ?", (trip_id,))
         conn.commit()
         return {"ok": True}
@@ -1263,6 +1474,10 @@ def api_add_rides(trip_id: int, req: AddRidesRequest, user=Depends(get_session_u
     conn = db.connect()
     try:
         _get_owned_roadtrip(conn, trip_id, user["id"])
+        # An empty list would build `IN ()` — accepted by SQLite, a syntax
+        # error on Postgres (i.e. a 500 in production only).
+        if not req.ride_ids:
+            return {"ok": True}
         placeholders = ",".join("?" * len(req.ride_ids))
         conn.execute(
             f"UPDATE rides SET roadtrip_id = ? WHERE id IN ({placeholders}) AND user_id = ?",
@@ -1280,7 +1495,8 @@ def api_export_gpx(trip_id: int, user=Depends(get_session_user)):
     try:
         trip = _get_owned_roadtrip(conn, trip_id, user["id"])
         ride_rows = conn.execute(
-            "SELECT * FROM rides WHERE roadtrip_id = ? ORDER BY start_time", (trip_id,)
+            "SELECT * FROM rides WHERE roadtrip_id = ? AND user_id = ? ORDER BY start_time",
+            (trip_id, user["id"]),
         ).fetchall()
         return _gpx_response(_build_gpx(conn, ride_rows), trip["name"] or "roadtrip")
     finally:
@@ -1308,11 +1524,11 @@ def _tag_summary(conn, tag_row, ride_rows, members_map=None) -> dict:
     }
 
 
-def _tag_ride_rows(conn, tag_id: int):
+def _tag_ride_rows(conn, tag_id: int, user_id: str):
     return conn.execute(
         "SELECT r.* FROM rides r JOIN ride_tags rt ON rt.ride_id = r.id "
-        "WHERE rt.tag_id = ? ORDER BY r.start_time",
-        (tag_id,),
+        "WHERE rt.tag_id = ? AND r.user_id = ? ORDER BY r.start_time",
+        (tag_id, user_id),
     ).fetchall()
 
 
@@ -1351,7 +1567,7 @@ def api_tag_detail(tag_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
         tag = _get_owned_tag(conn, tag_id, user["id"])
-        ride_rows = _tag_ride_rows(conn, tag_id)
+        ride_rows = _tag_ride_rows(conn, tag_id, user["id"])
         members_map = _merge_members_map(conn, user["id"])
         rides = [_merged_ride_dict(conn, r, members_map) for r in ride_rows]
         polylines, pauses = _polylines_and_pauses(conn, ride_rows, members_map)
@@ -1399,7 +1615,7 @@ def api_export_tag_gpx(tag_id: int, user=Depends(get_session_user)):
     conn = db.connect()
     try:
         tag = _get_owned_tag(conn, tag_id, user["id"])
-        ride_rows = _tag_ride_rows(conn, tag_id)
+        ride_rows = _tag_ride_rows(conn, tag_id, user["id"])
         return _gpx_response(_build_gpx(conn, ride_rows), tag["name"] or "tag")
     finally:
         conn.close()

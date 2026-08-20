@@ -1,9 +1,9 @@
 import sqlite3
 
 import pytest
+from conftest import make_ride
 
 import db as db_module
-from conftest import make_ride
 
 
 @pytest.fixture

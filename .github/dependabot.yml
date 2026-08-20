@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Pinned-by-SHA actions never update on their own — this is what keeps
+  # them from silently rotting.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

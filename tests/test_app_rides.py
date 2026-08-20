@@ -1,7 +1,8 @@
 """PATCH /api/rides/{id}/notes and notes' preservation across a resync —
 previously had zero test coverage."""
-import db as db_module
 from conftest import make_ride
+
+import db as db_module
 
 
 def _seed_ride(user_id, ride_id, start_time, **kw):
