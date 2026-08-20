@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Runs the linter on staged Python files, fixes what it can, and re-stages
+# the result — so a commit is never the thing that discovers a lint failure.
+# Blocks only on what ruff cannot fix by itself.
+#
+# Shared by every worktree of this repo: enabled with an absolute
+# core.hooksPath, so a worktree on a branch that doesn't carry this file
+# still gets it.
+#
+#   git config core.hooksPath "$(pwd)/hooks"
+#
+# Skip for one commit with `git commit --no-verify` (and say why).
+#
+# Written for bash 3.2 — the one macOS ships — so no mapfile/readarray.
+set -euo pipefail
+
+RUFF_VERSION="0.16.4"   # keep in sync with requirements-dev.txt
+ROOT="$(git rev-parse --show-toplevel)"
+
+# Prefer a real ruff on PATH, then the project venv, then uvx (which
+# downloads and caches the pinned version on first use).
+if command -v ruff >/dev/null 2>&1; then
+  RUFF="ruff"
+elif [ -x "$ROOT/.venv/bin/ruff" ]; then
+  RUFF="$ROOT/.venv/bin/ruff"
+elif command -v uvx >/dev/null 2>&1; then
+  RUFF="uvx ruff@${RUFF_VERSION}"
+else
+  echo "pre-commit: no ruff and no uvx available — skipping lint." >&2
+  exit 0
+fi
+
+STAGED="$(git diff --cached --name-only --diff-filter=ACM -- '*.py')"
+[ -z "$STAGED" ] && exit 0
+
+# A file with unstaged edits must not be silently re-staged: fixing it and
+# adding it would sweep those edits into the commit behind the author's
+# back. Fix it, warn, leave it out of the re-stage.
+DIRTY="$(git diff --name-only -- '*.py')"
+RESTAGE=""
+EXISTING=""
+while IFS= read -r f; do
+  [ -n "$f" ] && [ -f "$f" ] || continue
+  EXISTING="$EXISTING$f"$'\n'
+  if printf '%s\n' "$DIRTY" | grep -qxF "$f"; then
+    echo "pre-commit: $f has unstaged changes — linted but NOT re-staged." >&2
+  else
+    RESTAGE="$RESTAGE$f"$'\n'
+  fi
+done <<< "$STAGED"
+
+[ -z "$EXISTING" ] && exit 0
+
+printf '%s' "$EXISTING" | tr '\n' '\0' | xargs -0 $RUFF check --fix --quiet || true
+
+# `ruff format` is deliberately NOT run yet. The repo has never been
+# formatted (20 of 29 files would change), so formatting per-commit would
+# bury real diffs under reformatting noise and collide with the branches
+# currently in flight. Once those land, run `ruff format .` as its own
+# commit and uncomment the line below — from then on it only ever touches
+# what you were editing anyway.
+# printf '%s' "$EXISTING" | tr '\n' '\0' | xargs -0 $RUFF format --quiet || true
+
+[ -n "$RESTAGE" ] && printf '%s' "$RESTAGE" | tr '\n' '\0' | xargs -0 git add --
+
+# Whatever is left needs a human: an unsafe fix, or a real finding.
+if ! printf '%s' "$EXISTING" | tr '\n' '\0' | xargs -0 $RUFF check; then
+  echo "" >&2
+  echo "pre-commit: ruff found issues it cannot fix on its own (above)." >&2
+  echo "            Fix them, or commit with --no-verify and say why." >&2
+  exit 1
+fi
