@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Audit initial** | 2026-08-20, 30 findings (`secaudit`, lecture seule) |
-| **Réconcilié le** | 2026-08-20, contre `main` = `9d776bc` (poussé **et déployé**) |
-| **Synthèse** | **24 findings résolus** (+ 3 sans objet) — **5 restent à traiter : 4 partiels, 1 ouvert** |
+| **Réconcilié le** | 2026-08-21, contre `main` = `52e161d` (poussé ; `9d776bc` déployé — les commits d'outillage depuis n'affectent pas le runtime) |
+| **Synthèse** | **27 findings résolus** (+ 3 sans objet) — **3 restent à traiter : 2 partiels, 1 ouvert** |
 | **Total** | 30 findings d'origine + 2 découverts depuis (**CICD-02** la CI rouge, **GH-03** l'alerte CodeQL) = 32 |
 | **Détail des correctifs** | `docs/SECURITY-REMEDIATION.md` (sur `main`) — ce fichier ne garde que ce qui reste |
 | **Version d'audit complète** | l'original 30-findings reste dans l'historique de ce fichier de travail |
@@ -59,17 +59,14 @@ vérifiées une par une, y compris en exécution réelle.
 |---|---|---|---|---|
 | **VM-02** | **High** | ✅ timer systemd `pg_dump` quotidien actif, rétention 7 j, dump testé · ❌ **pas de copie hors VM, pas de chiffrement du dump** — une perte de VM emporte encore les sauvegardes avec elle | Copier les dumps hors de la VM (S3/B2/rsync) et les chiffrer (age/gpg), puis **tester une restauration**. Le chiffrement du dump devient d'autant plus utile que les jetons qu'il contient sont désormais chiffrés en base | **Oui** (ops) |
 
-## Findings partiels — la moitié restante (4)
+## Findings partiels — la moitié restante (2)
 
 Une partie est corrigée sur `main` ; ce tableau ne décrit que **ce qui reste**.
 
 | ID | Sév. | Ce qui reste précisément | Remédiation | GO requis |
 |---|---|---|---|---|
-| **GH-01** | Medium | ✅ `validity_checks` / `non_provider_patterns` : **non disponibles** sur un dépôt public perso (GitHub Advanced Security payant) — vérifié dans l'UI, il n'y a pas de case à cocher · ✅ **branche `main` protégée** (force-push et suppression refusés), Dependabot security updates ON, private vulnerability reporting ON, CodeQL actif · ❌ `validity_checks` et `non_provider_patterns` : **non activables par API dépôt**, ils dépendent des réglages du compte (Settings → Code security) · ❌ commits non signés (choix assumé) · *ancien état :* ✅ poussés et actifs : **CodeQL tourne et passe**, Dependabot ouvre des PR (3 en cours), secret scanning + push protection ON · ❌ Dependabot **security** updates, validity checks et non-provider patterns toujours `disabled` · ❌ **aucune protection sur `main`** · ❌ aucun commit signé | Activer le reste (commandes `gh` prêtes dans `docs/SECURITY-REMEDIATION.md` § b). Protéger `main` **une fois la CI verte**, sinon la règle « CI verte obligatoire » bloque tout (cf. CICD-02) | **Oui** (réglages GitHub) |
-| **CICD-01** | Medium | ✅ `permissions`, `concurrency`, actions épinglées par SHA, matrice 3.11/3.12/3.13, `ruff check`, `pip-audit`, job `postgres:16` · ❌ pas de `mypy`, pas de couverture ni de seuil · ❌ `ruff format --check` volontairement absent | `ruff format .` en **un commit isolé** une fois `feat/public-share` atterrie, en réactivant dans le même commit l'étape CI **et** la ligne commentée du hook. Puis `mypy` et `pytest-cov` | Non |
-| **APP-04** | Medium | ✅ CSP + `nosniff` + `X-Frame-Options` + `Referrer-Policy` + `Permissions-Policy` sur toutes les réponses · ❌ `style-src` garde `'unsafe-inline'` (la feuille de style vit dans un `<style>` de `index.html`) · ❌ en-tête `server: uvicorn` toujours divulgué | Déplacer le `<style>` vers un `.css` servi, puis retirer `'unsafe-inline'`. `--header server:` est déjà dans `deploy/roadtrips.service` | Non |
+| **APP-04** | Medium | ✅ CSP + `nosniff` + `X-Frame-Options` + `Referrer-Policy` + `Permissions-Policy` sur toutes les réponses · ❌ `style-src` garde `'unsafe-inline'` (la feuille de style vit dans un `<style>` de `index.html`) · ✅ en-tête `server` : la prod annonce `carnet`, plus `uvicorn` (vérifié en HTTP) — posé par `--header server:carnet` dans l'unit systemd **et** dans la cible `make run`, parce que le faire dans un middleware ferait envoyer les **deux** en-têtes par uvicorn | Déplacer le `<style>` vers un `.css` servi, puis retirer `'unsafe-inline'` — le seul reste de ce finding | Non |
 | **APP-10** | Low | ✅ `logging` configuré, dernier `print()` retiré, login/logout journalisés · ❌ pas de journal structuré · ❌ aucune trace d'audit sur la purge de compte ni sur les accès au dashboard admin | Logger JSON, et journaliser `DELETE /api/account/data` et `/api/admin/stats` | Non |
-| **SC-02** | Info | ✅ dépendances de dev épinglées, `pip-audit` en CI, 0 vulnérabilité connue sur les 6 directes · ❌ transitives non verrouillées (pas de lock, pas de hashes) | `uv lock` / `pip-compile --generate-hashes` | Non |
 
 ---
 
@@ -81,6 +78,9 @@ Vérifiés un par un dans le code de `main` = `fbb219a` (114 tests verts,
 
 | ID | Sév. | En un mot |
 |---|---|---|
+| **CICD-01** | Medium | CI complète : `ruff`, **`mypy`** (0 erreur sur 27 fichiers), `pip-audit` sur le lock, matrice 3.11/3.12/3.13, job Postgres, **plancher de couverture à 80 %** (actuel : 83 %), actions épinglées par SHA, `permissions` minimales, `concurrency` |
+| **SC-02** | Info | `requirements.lock` : arbre transitif complet épinglé **avec hashes**, audité en CI, plus un garde-fou qui échoue si une épingle de `requirements.txt` manque au lock |
+| **GH-01** | Medium | Tout ce qui est accessible sur ce compte est activé : secret scanning, push protection, Dependabot (alerts + security updates + version updates), CodeQL, private vulnerability reporting, dependency graph, `SECURITY.md`, et **branche `main` protégée** (force-push et suppression refusés). Le reste — *validity checks*, *non-provider patterns*, *code quality* — relève de **GitHub Advanced Security, payant**, non disponible sur ce compte : hors de portée, pas un reliquat. Commits non signés : choix assumé du propriétaire |
 | **SC-01** | Medium | Leaflet **vendoré** dans `static/vendor/` (SHA-384 vérifiés identiques aux SRI épinglés contre unpkg) — plus aucune dépendance CDN, `script-src 'self'` sans exception. Rendu vérifié en navigateur headless : 0 violation CSP |
 | **APP-05** | Medium | Rate limiting sur `/cols`, `/elevation`, `/sync`, `/sync/status` (par compte) et sur l'endpoint public d'altitude (par IP) ; lookups Overpass déjà plafonnés |
 | **VM-05** | Low | *Sans objet* : le `sshd` de la VM est celui d'exe.dev (`-f /exe.dev/etc/ssh/sshd_config`), pas un `sshd` système. Sa config a **déjà** `PasswordAuthentication no`, `PermitRootLogin prohibit-password`, `PermitEmptyPasswords no` et des algos modernes. `unattended-upgrades` est actif |

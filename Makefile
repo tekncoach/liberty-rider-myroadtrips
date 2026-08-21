@@ -6,8 +6,11 @@ install:
 	python3 -m venv .venv
 	$(VENV)/pip install -q -r requirements.txt
 
+# --header server:carnet replaces uvicorn's own Server header (finding
+# APP-07). It has to happen here rather than in a middleware: uvicorn adds
+# its header after the app has run, so setting it in code sends both.
 run:
-	$(VENV)/uvicorn app:app --reload --port 8420
+	$(VENV)/uvicorn app:app --reload --port 8420 --header server:carnet
 
 test:
 	$(VENV)/pip install -q -r requirements-dev.txt
