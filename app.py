@@ -206,6 +206,14 @@ async def add_security_headers(request, call_next):
         response = await call_next(request)
     for header, value in SECURITY_HEADERS.items():
         response.headers.setdefault(header, value)
+    # Static assets carry no version in their URL, and without an explicit
+    # Cache-Control a browser is free to apply its own freshness heuristic
+    # and keep serving a stale app.js long after a deploy — a whole class of
+    # "works on the branch, broken in production". `no-cache` still allows
+    # caching, it just forces revalidation, so the ETag turns almost every
+    # hit into a 304.
+    if request.url.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
     return response
 
 

@@ -354,3 +354,11 @@ def test_rate_limit_is_per_account(make_client, login_as, app_module):
         alice.post("/api/sync", json={"full": False})
     assert alice.post("/api/sync", json={"full": False}).status_code == 429
     assert bob.post("/api/sync", json={"full": False}).status_code == 200
+
+
+def test_static_assets_must_be_revalidated(client):
+    """A browser applying its own freshness heuristic to app.js keeps
+    serving yesterday's frontend after a deploy."""
+    assert client.get("/static/app.js").headers["cache-control"] == "no-cache"
+    # The API is unaffected.
+    assert "cache-control" not in client.get("/api/auth/status").headers
