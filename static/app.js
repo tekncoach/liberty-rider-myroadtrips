@@ -870,10 +870,17 @@ function renderRideModalShare() {
     document.getElementById("shareCreateBtn").addEventListener("click", () => setShare({ regenerate: false }));
     return;
   }
+  // The URL is shown three ways on purpose: as plain selectable text (which
+  // renders even if the input doesn't), as a link you can open to check what
+  // visitors see, and in a readonly field for the Copier button. A share
+  // link nobody can read or copy is a feature that does not exist — which is
+  // exactly how this shipped the first time.
   rideModalShare.innerHTML = `
+    <div class="share-label">Lien public de ce trajet :</div>
+    <div class="share-url-text"><a href="${escapeHtml(share.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(share.url)}</a></div>
     <div class="share-row">
       <input id="shareUrl" readonly aria-label="Lien public de ce trajet" value="${escapeHtml(share.url)}" />
-      <button id="shareCopyBtn">Copier</button>
+      <button id="shareCopyBtn" class="primary">📋 Copier le lien</button>
     </div>
     <div class="share-actions">
       <button id="shareRevokeBtn" class="danger">Désactiver le lien</button>

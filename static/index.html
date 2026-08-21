@@ -391,6 +391,14 @@
   #rideModalMenu button:hover { background: var(--row-hover); }
   #rideModalShare { padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--bg); font-size: 12.5px; }
   #rideModalShare .share-hint { color: var(--muted); font-size: 11.5px; margin-top: 6px; line-height: 1.45; }
+  #rideModalShare .share-label { font-weight: 600; margin-bottom: 4px; }
+  /* Plain text, wrapping anywhere: the URL stays readable and selectable
+     however narrow the modal gets, and with no input involved. */
+  #rideModalShare .share-url-text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    word-break: break-all; margin-bottom: 8px;
+  }
+  #rideModalShare .share-url-text a { color: var(--accent); }
   #rideModalShare .share-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   #rideModalShare input {
     flex: 1; min-width: 200px; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--border);
