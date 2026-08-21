@@ -843,8 +843,21 @@ function setRideModalMenu(open) {
 document.getElementById("rideModalShareBtn").addEventListener("click", () => {
   setRideModalMenu(false);
   rideModalShare.hidden = !rideModalShare.hidden;
-  if (!rideModalShare.hidden) renderRideModalShare();
+  if (!rideModalShare.hidden) {
+    renderRideModalShare();
+    revealShare();
+  }
 });
+
+// The button that opens this lives in the menu at the very top of the
+// modal, while the panel itself sits mid-modal, above the map. On a real
+// ride — elevation chart, cols, timeline — that is far below the fold, so
+// clicking "Lien public" appeared to do nothing at all. Bring it into view,
+// and select the URL so ⌘C works without touching the mouse again.
+function revealShare() {
+  rideModalShare.scrollIntoView({ block: "center", behavior: "smooth" });
+  document.getElementById("shareUrl")?.select();
+}
 
 function renderRideModalShare() {
   const share = state.rideShare;
@@ -888,6 +901,7 @@ async function setShare(body) {
     body: JSON.stringify(body),
   });
   renderRideModalShare();
+  revealShare();
   await refreshSharedFlag(state.rideModalId, true);
 }
 
