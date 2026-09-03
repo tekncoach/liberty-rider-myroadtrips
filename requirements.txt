@@ -4,4 +4,4 @@ requests==2.34.2
 polyline==2.0.4
 gpxpy==1.6.2
 psycopg[binary,pool]==3.3.4
-cryptography==50.0.0
+cryptography==50.0.1
