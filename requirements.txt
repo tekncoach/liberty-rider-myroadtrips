@@ -3,5 +3,5 @@ uvicorn==0.52.3
 requests==2.34.2
 polyline==2.0.4
 gpxpy==1.6.2
-psycopg[binary,pool]==3.3.4
+psycopg[binary,pool]==3.3.5
 cryptography==50.0.0
