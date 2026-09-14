@@ -1676,6 +1676,79 @@ def api_public_ride(token: str, response: Response):
         conn.close()
 
 
+@app.get("/api/stats")
+def api_stats(user=Depends(get_session_user)):
+    """Account-wide totals, records and a per-year breakdown.
+
+    Same "which rides count" rule as the other list endpoints: scoped to
+    this user, `hidden` excluded, and `merged_into IS NOT NULL` excluded —
+    a merged ride's numbers already live on the ride that absorbed it, so
+    counting both would double every merge. `_merged_ride_dict` folds a
+    merge group's members into the representative's totals, same as the
+    rides list and roadtrip summary do.
+    """
+    conn = db.connect()
+    try:
+        raw_rows = conn.execute(
+            f"SELECT {RIDE_LIST_COLS} FROM rides WHERE user_id = ? AND hidden = 0 AND merged_into IS NULL",
+            (user["id"],),
+        ).fetchall()
+        members_map = _merge_members_map(conn, user["id"])
+        rows = [_merged_ride_dict(conn, r, members_map) for r in raw_rows]
+
+        totals = {
+            "ride_count": len(rows),
+            "distance": sum(r["distance"] or 0 for r in rows),
+            "duration": sum(r["duration"] or 0 for r in rows),
+            "duration_without_pauses": sum(r["duration_without_pauses"] or 0 for r in rows),
+            "pause_count": sum(r["pause_count"] or 0 for r in rows),
+        }
+
+        longest_ride = None
+        highest_point = None
+        for r in rows:
+            if r["distance"] is not None and (longest_ride is None or r["distance"] > longest_ride["distance"]):
+                longest_ride = {"id": r["id"], "name": r["name"], "distance": r["distance"]}
+            if r["maximum_altitude"] is not None and (
+                highest_point is None or r["maximum_altitude"] > highest_point["maximum_altitude"]
+            ):
+                highest_point = {"id": r["id"], "name": r["name"], "maximum_altitude": r["maximum_altitude"]}
+
+        by_day: dict = {}
+        for r in rows:
+            key = day_key(r["start_time"])
+            day = by_day.setdefault(key, {"distance": 0, "ride_count": 0})
+            day["distance"] += r["distance"] or 0
+            day["ride_count"] += 1
+        longest_day = None
+        for date, day in by_day.items():
+            if longest_day is None or day["distance"] > longest_day["distance"]:
+                longest_day = {"date": date, "distance": day["distance"], "ride_count": day["ride_count"]}
+
+        by_year_map: dict = {}
+        for r in rows:
+            year = parse_iso(r["start_time"]).year
+            bucket = by_year_map.setdefault(
+                year, {"year": year, "ride_count": 0, "distance": 0, "duration": 0}
+            )
+            bucket["ride_count"] += 1
+            bucket["distance"] += r["distance"] or 0
+            bucket["duration"] += r["duration"] or 0
+        by_year = [by_year_map[y] for y in sorted(by_year_map, reverse=True)]
+
+        return {
+            "totals": totals,
+            "records": {
+                "longest_ride": longest_ride,
+                "highest_point": highest_point,
+                "longest_day": longest_day,
+            },
+            "by_year": by_year,
+        }
+    finally:
+        conn.close()
+
+
 # --- roadtrips --------------------------------------------------------
 
 def _roadtrip_summary(conn, trip_row, ride_rows, members_map=None) -> dict:
