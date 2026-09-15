@@ -2136,4 +2136,31 @@ def favicon():
     return FileResponse(STATIC / "img" / "favicon.svg", media_type="image/svg+xml")
 
 
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    """Liveness and database reachability probe. No authentication required.
+    
+    Returns 200 and {"status": "ok", "database": "ok"} when healthy, or 503
+    and {"status": "degraded", "database": "unreachable"} when the database
+    is unreachable. Never raises an exception.
+    """
+    try:
+        conn = db.connect()
+        try:
+            # Trivial query to test database reachability
+            conn.execute("SELECT 1")
+        finally:
+            conn.close()
+        return JSONResponse(
+            status_code=200,
+            content={"status": "ok", "database": "ok"}
+        )
+    except Exception:
+        # Database is unreachable or some other error occurred
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "database": "unreachable"}
+        )
+
+
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
